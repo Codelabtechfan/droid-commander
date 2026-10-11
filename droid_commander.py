@@ -1252,7 +1252,10 @@ def main():
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
     if "--selftest" in sys.argv:
+        if getattr(sys, "frozen", False):
+            sys.stdout = sys.stderr = open(os.path.join(os.getcwd(), "selftest_log.txt"), "w")
         code = selftest()
+        sys.stdout.flush()
         if getattr(sys, "frozen", False):
             with open(os.path.join(os.getcwd(), "selftest_result.txt"), "w") as f:
                 f.write(("OK" if code == 0 else "FAILED") + " " + VERSION)

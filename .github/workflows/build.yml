@@ -14,6 +14,7 @@ jobs:
         run: |
           $env:SDL_VIDEODRIVER="dummy"; $env:SDL_AUDIODRIVER="dummy"
           $p = Start-Process dist\DroidCommander.exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content selftest_log.txt
           Get-Content selftest_result.txt
           $v = (Select-String -Path droid_commander.py -Pattern '^VERSION = "(.*)"').Matches[0].Groups[1].Value
           if ((Get-Content selftest_result.txt) -ne "OK $v") { Write-Error "expected OK $v"; exit 1 }
