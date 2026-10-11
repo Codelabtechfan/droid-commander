@@ -12,20 +12,24 @@ class DriveSettings:
     deadzone = 0.25      # stick deadzone
 
 
-def drive_from_keyboard(k, K, base_heading, max_speed, dt, s=DriveSettings):
-    """k = pygame key state, K = pygame module. Returns (new_base_heading, heading, speed, had_input)."""
-    fwd = (k[K.K_w] or k[K.K_UP]) - (k[K.K_s] or k[K.K_DOWN])
-    turn = (k[K.K_d] or k[K.K_RIGHT]) - (k[K.K_a] or k[K.K_LEFT])
-    boost = k[K.K_LSHIFT] or k[K.K_RSHIFT]
+def drive_from_keyboard(k, K, base_heading, max_speed, dt, s=DriveSettings, kb=None):
+    """k = pygame key state, K = pygame module, kb = Keybinds. Returns (new_base_heading, heading, speed, had_input)."""
+    if kb is None:
+        import keybinds, tempfile
+        kb = keybinds.Keybinds(os.path.join(tempfile.gettempdir(), "_dc_default_keys.json"))
+    p = lambda a: kb.pressed(a, k, K.key.key_code)
+    fwd = p("up") - p("down")
+    turn = p("right") - p("left")
+    boost = p("boost")
     base = (base_heading + turn * s.turn_rate * dt) % 360
     h, sp = base, 0
     if fwd:
         sp = max_speed * (s.boost if boost else 1)
         if fwd < 0:
             h = (h + 180) % 360
-    if k[K.K_SPACE]:
+    if p("stop"):
         sp = 0
-    return base, h, sp, bool(fwd or turn or k[K.K_SPACE])
+    return base, h, sp, bool(fwd or turn or p("stop"))
 
 
 def drive_from_pad(j, base_heading, max_speed, s=DriveSettings):

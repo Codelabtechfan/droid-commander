@@ -11,6 +11,8 @@ Not made by or connected to Sphero, Disney or Lucasfilm. It uses no movie logos,
 5. Press **SCAN**, then click each droid to connect (up to 4 at once). **+ Demo droid** lets you try it with no droids.
 
 ## Controls
+Click **Keybinds** (right panel) to change any key or controller button. Click a box, then press the new key or button (Esc cancels). **Reset defaults** puts the defaults back, and red text means two actions share a key. Your keybinds are saved in `%APPDATA%\DroidCommander\keybinds.json`.
+
 - Keyboard drives the selected droid: Tab or F1-F4 picks which one. WASD/arrows drive, Shift boosts, Q/E change the top speed, 1-0 play emotes, P pats, O pokes, Z/C turn the dome, X changes stance (R2 droids only), Space stops, Esc disconnects.
 - Controllers: pad 1 drives droid 1, pad 2 drives droid 2 and so on. Back/View changes which droid a pad drives. Left stick drives, RT boosts, LT slows, A/B/X/Y play emotes, LB pats, RB changes stance, Start plays a random emote, right stick turns the dome.
 

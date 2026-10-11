@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -583,7 +583,7 @@ class Society:
 # ---------------------------------------------------------------- GUI
 def run_gui(demo=False, selftest_frames=0, demo_count=1):
     import pygame
-    import modes, band as bandmod, updater as updmod
+    import modes, band as bandmod, updater as updmod, keybinds as kbmod
     pygame.init()
     pygame.joystick.init()
     W, H = 1180, 720
@@ -595,6 +595,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     FS = pygame.font.SysFont("segoeui,arial,dejavusans", 14)
     BG, PANEL, ACC, TXT, DIM = (18, 22, 34), (30, 36, 54), (0, 170, 255), (235, 240, 250), (140, 150, 170)
     society = Society()
+    kb = kbmod.Keybinds(os.path.join(data_dir(), "keybinds.json"))
     upd = updmod.Updater(VERSION)
     upd_msg = None if selftest_frames else updmod.read_last_result(VERSION)
     updmod.cleanup_old()
@@ -608,7 +609,6 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     bs_ = {"band": None, "found": [], "tab": "Control", "game": None, "hunt": None, "drive_until": 0, "drive_off": 0,
            "last_g": "", "last_g_t": 0, "msg": "", "ping_t": 0, "scanning": False}
     cubes = bandmod.CubeCollection(os.path.join(data_dir(), "data_cubes.json"))
-    GKEYS = {getattr(pygame, "K_" + v.lower()): g for g, v in bandmod.GESTURE_KEYS.items()}
     state = {"found": [], "scanning": False, "status": "Press SCAN to look for droids", "brains": [],
              "active": 0, "connecting": 0, "upd_msg": upd_msg, "max": 160, "heading": {}, "busy_addrs": set()}
     joys = {}      # instance_id -> joystick
@@ -804,6 +804,24 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     bar(516, y0 + 120, 160, gm.bot_hp / 6, (255, 90, 90), "Training bot")
             button((346, 600, 140, 32), "Restart", lambda: set_tab(tab), col=(0, 200, 140), f=FS)
 
+    def draw_keys():
+        text("Keybinds", (346, 104), FB, ACC)
+        rb = state.get("rebind")
+        text("Press a key / controller button..." if rb else "Click a key or pad box, then press the new one (Esc cancels).", (346, 138), FS, (255, 220, 120) if rb else DIM)
+        button((690, 104, 140, 30), "Reset defaults", kb.reset, col=(255, 130, 130), f=FS)
+        bad = kb.conflicts()
+        for i, a in enumerate(kbmod.ORDER):
+            col_, row = i // 17, i % 17
+            x, y = 346 + col_ * 255, 162 + row * 30
+            text(kb.label(a)[:17], (x, y + 5), FS, (255, 110, 110) if a in bad else TXT)
+            kname = " / ".join(kb.keys(a)) or "-"
+            p_ = kb.b[a]["pad"]
+            sel = rb and rb[0] == a
+            button((x + 122, y, 78, 26), "..." if sel and rb[1] == "key" else kname[:9], (lambda a=a: state.__setitem__("rebind", (a, "key"))), col=(255, 220, 120) if sel and rb[1] == "key" else (120, 130, 170), f=FS)
+            button((x + 204, y, 44, 26), "..." if sel and rb[1] == "pad" else ("B%d" % p_ if p_ is not None else "-"), (lambda a=a: state.__setitem__("rebind", (a, "pad"))), col=(255, 220, 120) if sel and rb[1] == "pad" else (100, 110, 150), f=FS)
+        if bad:
+            text("Red = same key/button used twice!", (346, 680), FS, (255, 110, 110))
+
     running, frame, last = True, 0, time.time()
     emote_keys = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0]
     while running:
@@ -825,44 +843,60 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 j = pygame.joystick.Joystick(ev.device_index); joys[j.get_instance_id()] = j
             elif ev.type == pygame.JOYDEVICEREMOVED:
                 joys.pop(ev.instance_id, None)
-            elif ev.type == pygame.KEYDOWN and ev.key in GKEYS and bs_["band"] and isinstance(bs_["band"], bandmod.DemoBand):
-                bs_["band"].events.append(GKEYS[ev.key])
-            elif ev.type == pygame.KEYDOWN and b:
-                tbl = emote_table(b.d.model)
-                if ev.key == pygame.K_TAB:
-                    state["active"] += 1
-                elif ev.key in (pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4):
+            elif ev.type == pygame.KEYDOWN and state.get("rebind"):
+                act, kind = state["rebind"]; state["rebind"] = None
+                if kind == "key" and ev.key != pygame.K_ESCAPE:
+                    kb.set_key(act, pygame.key.name(ev.key))
+            elif ev.type == pygame.JOYBUTTONDOWN and state.get("rebind"):
+                act, kind = state["rebind"]; state["rebind"] = None
+                if kind == "pad":
+                    kb.set_pad(act, ev.button)
+            elif ev.type == pygame.KEYDOWN:
+                act = kb.action_for_key(pygame.key.name(ev.key))
+                if act and act.startswith("band_"):
+                    if bs_["band"] and isinstance(bs_["band"], bandmod.DemoBand):
+                        bs_["band"].events.append(act[5:])
+                elif b and act:
+                    tbl = emote_table(b.d.model)
+                    if act == "next_droid": state["active"] += 1
+                    elif act.startswith("emote") and int(act[5:]) - 1 < len(tbl):
+                        lab = tbl[int(act[5:]) - 1][0]; b.emote(lab); b.say("Emote: " + lab)
+                    elif act == "random_emote": lab = random.choice(tbl)[0]; b.emote(lab); b.say("Emote: " + lab)
+                    elif act == "pat": b.pet()
+                    elif act == "poke": b.poke()
+                    elif act == "stance": b.toggle_stance()
+                    elif act == "dome_left": b.turn_dome(-30)
+                    elif act == "dome_right": b.turn_dome(30)
+                    elif act == "speed_down": state["max"] = max(40, state["max"] - 20)
+                    elif act == "speed_up": state["max"] = min(255, state["max"] + 20)
+                    elif act == "disconnect": disconnect(b)
+                if b and ev.key in (pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4):
                     i = [pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4].index(ev.key)
                     if i < len(brains()):
                         state["active"] = i
-                elif ev.key in emote_keys and emote_keys.index(ev.key) < len(tbl):
-                    lab = tbl[emote_keys.index(ev.key)][0]; b.emote(lab); b.say("Emote: " + lab)
-                elif ev.key == pygame.K_p: b.pet()
-                elif ev.key == pygame.K_o: b.poke()
-                elif ev.key == pygame.K_x: b.toggle_stance()
-                elif ev.key == pygame.K_z: b.turn_dome(-30)
-                elif ev.key == pygame.K_c: b.turn_dome(30)
-                elif ev.key == pygame.K_q: state["max"] = max(40, state["max"] - 20)
-                elif ev.key == pygame.K_e: state["max"] = min(255, state["max"] + 20)
-                elif ev.key == pygame.K_ESCAPE: disconnect(b)
             elif ev.type == pygame.JOYBUTTONDOWN and brains():
-                if ev.button == 6:
+                act = kb.action_for_pad(ev.button)
+                if act == "pad_switch":
                     joy_map[ev.instance_id] = joy_map.get(ev.instance_id, 0) + 1; continue
                 pb = pad_target(ev.instance_id)
-                if not pb:
+                if not pb or not act:
                     continue
                 tbl = emote_table(pb.d.model)
-                if ev.button in (0, 1, 2, 3):
-                    pb.emote(tbl[ev.button][0]); pb.say("Emote: " + tbl[ev.button][0])
-                elif ev.button == 4: pb.pet()
-                elif ev.button == 5: pb.toggle_stance()
-                elif ev.button == 7: lab = random.choice(tbl)[0]; pb.emote(lab); pb.say("Emote: " + lab)
+                if act.startswith("emote") and int(act[5:]) - 1 < len(tbl):
+                    lab = tbl[int(act[5:]) - 1][0]; pb.emote(lab); pb.say("Emote: " + lab)
+                elif act == "random_emote": lab = random.choice(tbl)[0]; pb.emote(lab); pb.say("Emote: " + lab)
+                elif act == "pat": pb.pet()
+                elif act == "poke": pb.poke()
+                elif act == "stance": pb.toggle_stance()
+                elif act == "dome_left": pb.turn_dome(-30)
+                elif act == "dome_right": pb.turn_dome(30)
+                elif act == "next_droid": joy_map[ev.instance_id] = joy_map.get(ev.instance_id, 0) + 1
 
         # ---- input -> drive (each droid separately)
         b = active()
         drive = {id(x): [state["heading"].get(id(x), 0), 0, False] for x in brains()}
-        if b:
-            base, h, sp, had = modes.drive_from_keyboard(pygame.key.get_pressed(), pygame, state["heading"].get(id(b), 0), state["max"], dt)
+        if b and not state.get("rebind") and state.get("page") != "keys":
+            base, h, sp, had = modes.drive_from_keyboard(pygame.key.get_pressed(), pygame, state["heading"].get(id(b), 0), state["max"], dt, kb=kb)
             state["heading"][id(b)] = base
             drive[id(b)] = [h, sp, had]
         for iid, j in list(joys.items()):
@@ -977,7 +1011,9 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         # middle: active droid
         text(state["status"], (330, 74), FS, TXT)
         pygame.draw.rect(screen, PANEL, (330, 96, 520, 608), border_radius=12)
-        if state.get("page") == "band":
+        if state.get("page") == "keys":
+            draw_keys()
+        elif state.get("page") == "band":
             draw_band()
         elif b:
             p = b.p
@@ -1074,6 +1110,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text(s, (880, 118 + i * 21), FS, ACC if s.startswith(("KEYBOARD", "CONTROLLERS")) else TXT)
         st = upd.status
         lbl = {"checking": "Checking...", "uptodate": "Up to date (v%s)" % VERSION, "offline": "Offline - try again"}.get(st, "Check for updates")
+        button((880, 624, 268, 30), "< Back" if state.get("page") == "keys" else "Keybinds", lambda: state.__setitem__("page", "droid" if state.get("page") == "keys" else "keys"), col=(0, 200, 255), f=FS)
         button((880, 662, 268, 30), lbl, upd.check, col=(120, 130, 170), enabled=st not in ("checking", "downloading"), f=FS)
         if st in ("available", "downloading", "ready", "error") and not upd.dismissed:
             r_ = pygame.Rect(330, 8, 520, 56)
@@ -1126,7 +1163,9 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     set_tab(tb)
             if 20 < frame < 85 and frame % 5 == 0 and bs_["band"]:
                 bs_["band"].events.append(random.choice(bandmod.GESTURES))
-            if os.environ.get("DC_SHOT") and frame in (35, 50, 80):
+            if frame == 86:
+                state["page"] = "keys"
+            if os.environ.get("DC_SHOT") and frame in (35, 50, 80, 89):
                 pygame.image.save(screen, "/tmp/band%d.png" % frame)
         if selftest_frames and frame >= selftest_frames:
             running = False
@@ -1236,6 +1275,14 @@ def selftest():
     open(lp, "w").write("START v1.2.2\nOK v1.2.2\n"); check(um.read_last_result("1.2.2", lp).startswith("Updated"), "detects successful update")
     open(lp, "w").write('FAILED v1.2.3 "C:\\x\\DroidCommander-new.exe"\n'); check("DroidCommander-new.exe" in um.read_last_result("1.2.2", lp), "reports fallback file")
     check(um.read_last_result("1.2.2", lp) is None, "log removed after reading")
+    import keybinds as kbm
+    kp = path + "keys"; k1 = kbm.Keybinds(kp)
+    check(k1.action_for_key("w") == "up" and k1.action_for_key("1") == "emote1" and k1.action_for_pad(4) == "pat", "default keybinds")
+    check(not k1.conflicts(), "defaults have no conflicts")
+    k1.set_key("up", "t"); k1.set_pad("poke", 4); k2 = kbm.Keybinds(kp)
+    check(k2.action_for_key("t") == "up" and k2.action_for_key("w") is None, "rebind saved + loaded")
+    check({"pat", "poke"} <= k2.conflicts(), "conflict detected")
+    k2.reset(); check(kbm.Keybinds(kp).action_for_key("w") == "up", "reset to defaults")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
