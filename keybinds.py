@@ -9,7 +9,7 @@ DEFAULTS = {  # action: [label, key, key2, pad_button]
     "next_droid": ["Switch droid", "tab", None, None], "disconnect": ["Disconnect", "escape", None, None],
     "pat": ["Pat", "p", None, 4], "poke": ["Poke", "o", None, None], "stance": ["Stance (R2)", "x", None, 5],
     "dome_left": ["Dome left (R2)", "z", None, None], "dome_right": ["Dome right (R2)", "c", None, None],
-    "random_emote": ["Random emote", None, None, 7], "pad_switch": ["Pad: change droid", None, None, 6],
+    "random_emote": ["Random emote", None, None, 7], "deep_sleep": ["Deep Sleep", None, None, None], "pad_switch": ["Pad: change droid", None, None, 6],
 }
 for i in range(10):
     DEFAULTS["emote%d" % (i + 1)] = ["Emote %d" % (i + 1), str((i + 1) % 10), None, i if i < 4 else None]

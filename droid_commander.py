@@ -159,6 +159,9 @@ class MockDroid:
     def lights(self, rgb):
         self.calls.append(("led", rgb))
 
+    def deep_sleep(self):
+        self.calls.append(("deep_sleep", None)); self.connected = False
+
     def get_battery(self):
         return self.battery
 
@@ -209,6 +212,11 @@ class RealDroid:
 
     def lights(self, rgb):
         self._q.put(("led", rgb))
+
+    def deep_sleep(self):
+        self._q.put(("deep_sleep", None))
+        if self._t:
+            self._t.join(10)
 
     def get_battery(self):
         return self.battery
@@ -273,6 +281,23 @@ class RealDroid:
     def _do(self, cmd):
         api, Color = self.api, self.Color
         kind, arg = cmd
+        if kind == "deep_sleep":
+            self._safe(lambda: api.stop_roll())
+            ok = False
+            if hasattr(self.toy, "enter_deep_sleep"):  # BB-9E, R2-D2, R2-Q5 (API v2 Power 0x13/0x00)
+                try:
+                    self.toy.enter_deep_sleep(0); ok = True
+                except Exception as e:
+                    log("enter_deep_sleep failed: %r" % e)
+            if not ok:  # BB-8 (API v1 Core sleep with DEEP_SLEEP interval)
+                try:
+                    from spherov2.commands.core import Core, IntervalOptions
+                    Core.sleep(self.toy, IntervalOptions.DEEP_SLEEP, 0, 0); ok = True
+                except Exception as e:
+                    log("core deep sleep failed: %r" % e)
+            log("deep sleep sent: %s" % ok)
+            self._stop.set()
+            return
         if kind == "emote":
             name = dict(emote_table(self.model)).get(arg)
             if not name:
@@ -390,6 +415,12 @@ class Brain:
     def poke(self):
         self.p.nudge(-6)
         self.say("Hey! %s didn't like that poke." % self.d.name); self.emote(pick(self.d.model, "poke"), xp=0)
+
+    def goodnight(self):
+        """Goodnight emote, save memory, then deep sleep (droid needs its charger to wake)."""
+        lab = next((l for l in ("Sleep", "Bow", "Sad", "Content") if l in dict(emote_table(self.d.model))), emote_table(self.d.model)[0][0])
+        self.d.emote(lab); self.say("Goodnight, %s..." % self.d.name)
+        self.p.nudge(5); self.p.save()
 
     def toggle_stance(self):
         if self.d.model not in ("R2D2", "R2Q5"):
@@ -652,6 +683,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             state["connecting"] -= 1
         threading.Thread(target=w, daemon=True).start()
 
+    def ask_sleep(b):
+        state["confirm_sleep"] = b
+
+    def do_sleep(b):
+        state["confirm_sleep"] = None
+        def w():
+            b.goodnight(); time.sleep(3)
+            b.d.deep_sleep(); disconnect(b)
+            state["status"] = "%s is in deep sleep. Put it on its charger to wake it." % b.d.name
+        threading.Thread(target=w, daemon=True).start()
+
     def disconnect(b=None):
         b = b or active()
         if not b:
@@ -811,16 +853,16 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         button((690, 104, 140, 30), "Reset defaults", kb.reset, col=(255, 130, 130), f=FS)
         bad = kb.conflicts()
         for i, a in enumerate(kbmod.ORDER):
-            col_, row = i // 17, i % 17
-            x, y = 346 + col_ * 255, 162 + row * 30
+            col_, row = i // 19, i % 19
+            x, y = 346 + col_ * 255, 160 + row * 27
             text(kb.label(a)[:17], (x, y + 5), FS, (255, 110, 110) if a in bad else TXT)
             kname = " / ".join(kb.keys(a)) or "-"
             p_ = kb.b[a]["pad"]
             sel = rb and rb[0] == a
-            button((x + 122, y, 78, 26), "..." if sel and rb[1] == "key" else kname[:9], (lambda a=a: state.__setitem__("rebind", (a, "key"))), col=(255, 220, 120) if sel and rb[1] == "key" else (120, 130, 170), f=FS)
-            button((x + 204, y, 44, 26), "..." if sel and rb[1] == "pad" else ("B%d" % p_ if p_ is not None else "-"), (lambda a=a: state.__setitem__("rebind", (a, "pad"))), col=(255, 220, 120) if sel and rb[1] == "pad" else (100, 110, 150), f=FS)
+            button((x + 122, y, 78, 24), "..." if sel and rb[1] == "key" else kname[:9], (lambda a=a: state.__setitem__("rebind", (a, "key"))), col=(255, 220, 120) if sel and rb[1] == "key" else (120, 130, 170), f=FS)
+            button((x + 204, y, 44, 24), "..." if sel and rb[1] == "pad" else ("B%d" % p_ if p_ is not None else "-"), (lambda a=a: state.__setitem__("rebind", (a, "pad"))), col=(255, 220, 120) if sel and rb[1] == "pad" else (100, 110, 150), f=FS)
         if bad:
-            text("Red = same key/button used twice!", (346, 680), FS, (255, 110, 110))
+            text("Red = same key/button used twice!", (560, 138), FS, (255, 110, 110))
 
     running, frame, last = True, 0, time.time()
     emote_keys = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0]
@@ -870,6 +912,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     elif act == "speed_down": state["max"] = max(40, state["max"] - 20)
                     elif act == "speed_up": state["max"] = min(255, state["max"] + 20)
                     elif act == "disconnect": disconnect(b)
+                    elif act == "deep_sleep": ask_sleep(b)
                 if b and ev.key in (pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4):
                     i = [pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4].index(ev.key)
                     if i < len(brains()):
@@ -890,6 +933,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 elif act == "stance": pb.toggle_stance()
                 elif act == "dome_left": pb.turn_dome(-30)
                 elif act == "dome_right": pb.turn_dome(30)
+                elif act == "deep_sleep": ask_sleep(pb)
                 elif act == "next_droid": joy_map[ev.instance_id] = joy_map.get(ev.instance_id, 0) + 1
 
         # ---- input -> drive (each droid separately)
@@ -1020,6 +1064,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text("%s  -  %s" % (b.d.name, PRETTY.get(b.d.model, b.d.model)), (346, 106), FB)
             text("Level %d   XP %d   Mood: %s" % (p.level, p.xp, p.mood_name), (346, 142), F, DIM)
             button((734, 108, 100, 30), "Disconnect", lambda b=b: disconnect(b), col=(255, 100, 100), f=FS)
+            button((624, 108, 104, 30), "Deep Sleep", lambda b=b: ask_sleep(b), col=(150, 120, 255), f=FS)
             bar(346, 190, 230, (p.mood + 100) / 200, (255, 200, 0), "Mood")
             bar(596, 190, 230, p.energy / 100, (0, 220, 120), "Energy")
             batt = b.d.get_battery()
@@ -1143,6 +1188,20 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 line += w_ + " "
             text(line, (344, ly), FS)
             button((776, 18, 64, 36), "OK", lambda: state.__setitem__("upd_msg", None), col=(180, 180, 180), f=FS)
+        cs = state.get("confirm_sleep")
+        if cs:
+            if cs not in brains():
+                state["confirm_sleep"] = None
+            else:
+                buttons.clear()
+                ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
+                r_ = pygame.Rect(340, 250, 500, 200)
+                pygame.draw.rect(screen, PANEL, r_, border_radius=14); pygame.draw.rect(screen, (150, 120, 255), r_, 2, border_radius=14)
+                text("Put %s into Deep Sleep?" % cs.d.name, (360, 266), FB)
+                text("It will say goodnight and switch fully off.", (360, 310), F)
+                text("To wake it up again you must put it on its CHARGER.", (360, 336), F, (255, 220, 120))
+                button((360, 386, 200, 44), "Yes, goodnight", lambda cs=cs: do_sleep(cs), col=(150, 120, 255))
+                button((620, 386, 200, 44), "Cancel", lambda: state.__setitem__("confirm_sleep", None), col=(180, 180, 180))
         if state.get("quit"):
             running = False
         for r, cb in buttons:
@@ -1283,6 +1342,11 @@ def selftest():
     check(k2.action_for_key("t") == "up" and k2.action_for_key("w") is None, "rebind saved + loaded")
     check({"pat", "poke"} <= k2.conflicts(), "conflict detected")
     k2.reset(); check(kbm.Keybinds(kp).action_for_key("w") == "up", "reset to defaults")
+    d = MockDroid("BB9E", "zz"); b = Brain(d, Personality("zz", path + "zz")); b.goodnight(); d.deep_sleep()
+    check(d.calls[0][0] == "emote" and ("deep_sleep", None) in d.calls and os.path.exists(path + "zz"), "deep sleep: goodnight emote, memory saved, sleep sent")
+    from spherov2.toy.bb9e import BB9E as _B9; from spherov2.toy.r2d2 import R2D2 as _R2; from spherov2.commands.core import Core as _C, IntervalOptions as _IO
+    check(hasattr(_B9, "enter_deep_sleep") and hasattr(_R2, "enter_deep_sleep") and _IO.DEEP_SLEEP == 0xffff and hasattr(_C, "sleep"), "deep sleep API present")
+    check(kbm.Keybinds(path + "keys2").keys("deep_sleep") == [], "deep sleep unbound by default")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)

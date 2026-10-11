@@ -16,6 +16,9 @@ Click **Keybinds** (right panel) to change any key or controller button. Click a
 - Keyboard drives the selected droid: Tab or F1-F4 picks which one. WASD/arrows drive, Shift boosts, Q/E change the top speed, 1-0 play emotes, P pats, O pokes, Z/C turn the dome, X changes stance (R2 droids only), Space stops, Esc disconnects.
 - Controllers: pad 1 drives droid 1, pad 2 drives droid 2 and so on. Back/View changes which droid a pad drives. Left stick drives, RT boosts, LT slows, A/B/X/Y play emotes, LB pats, RB changes stance, Start plays a random emote, right stick turns the dome.
 
+## Deep Sleep
+The **Deep Sleep** button (next to Disconnect) makes the droid say goodnight, saves its memory and switches it fully off. To wake it up again, put it on its charger. You can give it a key in Keybinds; it has none by default.
+
 ## Modes (pick one per droid with the buttons under its stats)
 - **Drive**: free roam with keyboard or controller.
 - **Patrol**: the droid wanders around by itself, backs away and turns when it bumps into something, and plays emotes now and then. "Patrol ALL" sends every droid out at once. Pressing any drive key or moving the stick stops it.
