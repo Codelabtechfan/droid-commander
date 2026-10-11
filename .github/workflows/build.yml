@@ -1,0 +1,20 @@
+name: Build Windows exe
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --onefile --windowed --name DroidCommander --collect-all spherov2 --collect-all bleak --collect-submodules winrt --hidden-import bleak.backends.winrt droid_commander.py
+      - name: Selftest built exe
+        shell: pwsh
+        run: |
+          $env:SDL_VIDEODRIVER="dummy"; $env:SDL_AUDIODRIVER="dummy"
+          $p = Start-Process dist\DroidCommander.exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content selftest_result.txt
+          if ((Get-Content selftest_result.txt) -ne "OK") { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with: {name: DroidCommander, path: dist/DroidCommander.exe}
