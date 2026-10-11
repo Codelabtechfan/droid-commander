@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -717,7 +717,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         def w():
             try:
                 bs_["found"] = bandmod.scan_bands()
-                bs_["msg"] = "Found %d possible band(s)." % len(bs_["found"]) if bs_["found"] else "No band found. Real band support is experimental."
+                bs_["msg"] = "Found %d possible band(s)." % len(bs_["found"]) if bs_["found"] else "No band found. Wake the band and keep it close, then scan again."
             except Exception as e:
                 bs_["msg"] = "Band scan failed: %s" % e
             bs_["scanning"] = False
@@ -739,7 +739,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
 
     def draw_band():
         now = time.time()
-        text("Force Band  (experimental)", (346, 106), FB, (255, 170, 70))
+        text("Force Band", (346, 106), FB, (255, 170, 70))
         bd = bs_["band"]
         text(("Band: %s" % bd.name) if bd else "No band connected", (346, 140), F, DIM)
         if not bd:
@@ -766,7 +766,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             for i, s_ in enumerate(["Push = drive forward     Pull = drive backward",
                                     "Left / Right = turn and go     Stop = stop", "Up = cheer (emote)",
                                     "Controls the selected droid: %s" % (tgt.d.name if tgt else "none connected"),
-                                    "", "Real bands: the gesture reading is a best guess", "and may need tuning."]):
+                                    "", "Tip: if a gesture is missed, use a quicker,", "bigger flick."]):
                 text(s_, (346, y0 + i * 24), F if i < 4 else FS, TXT if i < 4 else DIM)
         elif tab == "Data Cubes":
             h = bs_["hunt"]
@@ -968,7 +968,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             bar(42, y + 56, 120, (bt or 0) / 100, (0, 170, 255), None, 10)
             bar(172, y + 56, 120, (x.p.mood + 100) / 200, (255, 200, 0), None, 10)
             y += 90
-        bl = "Force Band (experimental)" + ("  [on]" if bs_["band"] else "")
+        bl = "Force Band" + ("  [on]" if bs_["band"] else "")
         button((32, 640, 270, 32), ("< Back to droids" if state.get("page") == "band" else bl), lambda: state.__setitem__("page", "droid" if state.get("page") == "band" else "band"), col=(255, 160, 60), f=FS)
         text("Controllers: %d   connecting: %d" % (len(joys), state["connecting"]), (32, 682), FS, DIM)
 
