@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -583,7 +583,7 @@ class Society:
 # ---------------------------------------------------------------- GUI
 def run_gui(demo=False, selftest_frames=0, demo_count=1):
     import pygame
-    import modes, band as bandmod
+    import modes, band as bandmod, updater as updmod
     pygame.init()
     pygame.joystick.init()
     W, H = 1180, 720
@@ -595,6 +595,9 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     FS = pygame.font.SysFont("segoeui,arial,dejavusans", 14)
     BG, PANEL, ACC, TXT, DIM = (18, 22, 34), (30, 36, 54), (0, 170, 255), (235, 240, 250), (140, 150, 170)
     society = Society()
+    upd = updmod.Updater(VERSION)
+    if not selftest_frames:
+        upd.check()
     sounds = bandmod.make_sounds(pygame)
     def sfx(n):
         if n in sounds:
@@ -1067,6 +1070,31 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         text("Controls", (880, 80), FB)
         for i, s in enumerate(help_lines):
             text(s, (880, 118 + i * 21), FS, ACC if s.startswith(("KEYBOARD", "CONTROLLERS")) else TXT)
+        st = upd.status
+        lbl = {"checking": "Checking...", "uptodate": "Up to date (v%s)" % VERSION, "offline": "Offline - try again"}.get(st, "Check for updates")
+        button((880, 662, 268, 30), lbl, upd.check, col=(120, 130, 170), enabled=st not in ("checking", "downloading"), f=FS)
+        if st in ("available", "downloading", "ready", "error") and not upd.dismissed:
+            r_ = pygame.Rect(330, 8, 520, 56)
+            pygame.draw.rect(screen, (40, 120, 70), r_, border_radius=10)
+            if st == "available":
+                text("Update available: %s!" % upd.latest, (344, 14), F)
+                text("Your droids' memories and saves are kept.", (344, 38), FS, (210, 240, 220))
+                button((680, 18, 90, 36), "Update now", upd.update_now, col=(0, 220, 120), f=FS)
+                button((776, 18, 64, 36), "Later", lambda: setattr(upd, "dismissed", True), col=(180, 180, 180), f=FS)
+            elif st == "downloading":
+                text("Downloading %s...  %d%%" % (upd.latest, upd.progress * 100), (344, 14), F)
+                bar(344, 42, 490, upd.progress, (0, 220, 120), None, 12)
+            elif st == "ready":
+                text("Update downloaded!", (344, 14), F)
+                text("The app will close and reopen.", (344, 38), FS, (210, 240, 220))
+                def go():
+                    upd.restart_into_update(); state["quit"] = True
+                button((680, 18, 160, 36), "Restart & update", go, col=(0, 220, 120), f=FS)
+            else:
+                text("Update failed: %s" % upd.error[:40], (344, 14), F)
+                button((776, 18, 64, 36), "OK", lambda: setattr(upd, "dismissed", True), col=(180, 180, 180), f=FS)
+        if state.get("quit"):
+            running = False
         for r, cb in buttons:
             for c in clicks:
                 if r.collidepoint(c):
@@ -1182,6 +1210,13 @@ def selftest():
     check(got and len(bandmod.CubeCollection(path + "cubes").found) == 1, "data cube hunt + save")
     rt = bandmod.ReflexTrainer(); rt.update(0.1, [rt.prompt]); check(rt.score == 1, "reflex trainer scores")
     dt_ = bandmod.DuelTrainer(); dt_.update(0.1, [dt_.BLOCK[dt_.attack]]); dt_.update(0.1, ["push"]); check(dt_.bot_hp == 5, "duel block + strike")
+    import updater as um
+    check(um.is_newer("v1.10.0", "1.9.9") and not um.is_newer("v1.2.0", "1.2.0") and um.is_newer("1.2.1", "1.2"), "version compare")
+    check(um.pick_asset([{"name": "src.zip"}, {"name": "Other.exe"}, {"name": "DroidCommander.exe"}])["name"] == "DroidCommander.exe"
+          and um.pick_asset([{"name": "x.zip"}]) is None and um.pick_asset([{"name": "a.EXE"}])["name"] == "a.EXE", "asset selection")
+    bat = um.write_swap_script("C:\\t\\n.exe", "C:\\a\\DroidCommander.exe", 1234)
+    txt = open(bat).read(); os.remove(bat)
+    check("APPDATA" not in txt.upper() and "1234" in txt and "move /y" in txt, "swap script only touches exe")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)

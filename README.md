@@ -29,5 +29,8 @@ Click **Force Band (experimental)** at the bottom left.
 - **Reflex** (do the gesture that's shown before time runs out) and **Duel** (block the training bot's attacks, then push to strike) are training games. They use simple made-up sounds.
 - Holocrons you collected in the old official app were stored in your Sphero account, not on the band, so they can't be brought into this app.
 
+## Updates
+When a new version comes out, a green banner pops up at the top. Click **Update now**, then **Restart & update**. You can also click **Check for updates** in the Controls panel. Your droids' memories, recordings and Data Cubes are never touched.
+
 ## Personality
 Each droid remembers its mood, energy, XP, level, bumps and pats, plus its friendships with your other droids. All of this is saved in `%APPDATA%\DroidCommander`. When droids are connected together they greet each other, chat when they're idle, show off tricks, and react when another droid crashes or goes fast. If something breaks, look in `%APPDATA%\DroidCommander\log.txt`.
