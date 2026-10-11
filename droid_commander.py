@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -350,6 +350,11 @@ class Brain:
         self.stance = "tripod"
         self.signals = []  # events other droids can react to
         self.joined = time.time()
+        import modes
+        self.mode = "Drive"
+        self.auto = None  # active autopilot (Patrol/Path/Playback)
+        self.recorder = modes.Recorder()
+        self.path_points = []
 
     def say(self, text):
         self.events.append((time.time(), text)); self.events = self.events[-6:]
@@ -357,6 +362,7 @@ class Brain:
 
     def _bump(self):
         self.bump_flag = True  # handled on main thread
+        self.patrol_bump = True
 
     def greet(self):
         kind = self.p.start_session()
@@ -370,6 +376,8 @@ class Brain:
 
     def emote(self, label, xp=1):
         self.d.emote(label)
+        if xp:
+            self.recorder.emote(label)
         self.p.emotes += 1
         if xp:
             self.p.add_xp(xp); self.p.nudge(2)
@@ -393,6 +401,46 @@ class Brain:
         if self.d.model not in ("R2D2", "R2Q5"):
             return
         self.dome = max(-160, min(180, self.dome + delta)); self.d.dome_to(self.dome)
+
+    def set_mode(self, mode):
+        import modes
+        self.auto = None
+        if self.recorder.recording:
+            self.recorder.stop()
+        self.mode = mode
+        if mode == "Patrol":
+            self.auto = modes.PatrolMode(self); self.say("%s starts patrolling." % self.d.name)
+
+    def start_path(self):
+        import modes
+        pm = modes.PathMode(self, self.path_points)
+        if pm.segs:
+            self.auto = pm; self.say("%s follows your path (%d legs)." % (self.d.name, len(pm.segs)))
+
+    def start_playback(self, events):
+        import modes
+        if events:
+            self.auto = modes.PlaybackMode(self, events); self.say("%s replays a recording." % self.d.name)
+
+    def control(self, dt, heading, speed, had_input):
+        """Combine manual input with the current mode. Any manual input stops an autopilot."""
+        if self.auto:
+            if had_input:
+                self.say("%s: %s stopped by you." % (self.d.name, self.auto.name))
+                self.auto = None
+                if self.mode == "Patrol":
+                    self.mode = "Drive"
+            else:
+                out = self.auto.step(dt, self)
+                if out is None:
+                    self.say("%s finished %s." % (self.d.name, self.auto.name.lower())); self.auto = None
+                    heading, speed = (self.d.heading if hasattr(self.d, "heading") else heading), 0
+                else:
+                    heading, speed = out
+                    self.next_idle = time.time() + 20
+        if self.recorder.recording:
+            self.recorder.tick(heading, speed)
+        self.update(dt, heading, int(max(0, min(255, speed))), had_input)
 
     def update(self, dt, heading, speed, had_input, max_speed=255):
         now = time.time()
@@ -535,6 +583,7 @@ class Society:
 # ---------------------------------------------------------------- GUI
 def run_gui(demo=False, selftest_frames=0, demo_count=1):
     import pygame
+    import modes
     pygame.init()
     pygame.joystick.init()
     W, H = 1180, 720
@@ -612,6 +661,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             demo_add(); time.sleep(0.05)
 
     buttons = []
+    CANVAS = pygame.Rect(346, 366, 330, 230)
 
     def button(rect, label, cb, col=ACC, enabled=True, f=None):
         r = pygame.Rect(rect)
@@ -661,6 +711,12 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 running = False
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 clicks.append(ev.pos)
+                if b and b.mode == "Path" and CANVAS.collidepoint(ev.pos) and not b.auto:
+                    b.path_points = [ev.pos]; state["drawing"] = True
+            elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+                state["drawing"] = False
+            elif ev.type == pygame.MOUSEMOTION and state.get("drawing") and b and CANVAS.collidepoint(ev.pos):
+                b.path_points.append(ev.pos)
             elif ev.type == pygame.JOYDEVICEADDED:
                 j = pygame.joystick.Joystick(ev.device_index); joys[j.get_instance_id()] = j
             elif ev.type == pygame.JOYDEVICEREMOVED:
@@ -700,39 +756,24 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         b = active()
         drive = {id(x): [state["heading"].get(id(x), 0), 0, False] for x in brains()}
         if b:
-            k = pygame.key.get_pressed()
-            fwd = (k[pygame.K_w] or k[pygame.K_UP]) - (k[pygame.K_s] or k[pygame.K_DOWN])
-            turn = (k[pygame.K_d] or k[pygame.K_RIGHT]) - (k[pygame.K_a] or k[pygame.K_LEFT])
-            boost = k[pygame.K_LSHIFT] or k[pygame.K_RSHIFT]
-            base = (state["heading"].get(id(b), 0) + turn * 140 * dt) % 360
+            base, h, sp, had = modes.drive_from_keyboard(pygame.key.get_pressed(), pygame, state["heading"].get(id(b), 0), state["max"], dt)
             state["heading"][id(b)] = base
-            h, sp = base, 0
-            if fwd:
-                sp = state["max"] * (1.5 if boost else 1)
-                if fwd < 0:
-                    h = (h + 180) % 360
-            if k[pygame.K_SPACE]:
-                sp = 0
-            drive[id(b)] = [h, sp, bool(fwd or turn)]
+            drive[id(b)] = [h, sp, had]
         for iid, j in list(joys.items()):
             pb = pad_target(iid)
             if not pb:
                 continue
             try:
-                x, y = j.get_axis(0), j.get_axis(1)
-                mag = math.hypot(x, y)
-                if mag > 0.25:
-                    rt = (j.get_axis(5) + 1) / 2 if j.get_numaxes() > 5 else 0
-                    lt = (j.get_axis(4) + 1) / 2 if j.get_numaxes() > 4 else 0
-                    drive[id(pb)] = [(state["heading"].get(id(pb), 0) + math.degrees(math.atan2(x, -y))) % 360,
-                                     min(1, mag) * state["max"] * (1 + 0.6 * rt - 0.5 * lt), True]
+                r = modes.drive_from_pad(j, state["heading"].get(id(pb), 0), state["max"])
+                if r:
+                    drive[id(pb)] = list(r)
                 if j.get_numaxes() > 2 and abs(j.get_axis(2)) > 0.5 and frame % 6 == 0:
                     pb.turn_dome(15 if j.get_axis(2) > 0 else -15)
             except Exception:
                 pass
         for x in list(brains()):
             h, sp, had = drive[id(x)]
-            x.update(dt, h, int(max(0, min(255, sp))), had)
+            x.control(dt, h, sp, had)
             if frame % 600 == 0:
                 x.p.save()
             if not isinstance(x.d, MockDroid) and not x.d.connected:
@@ -801,11 +842,56 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             a = math.radians(hd)
             pygame.draw.line(screen, ACC, (cx, cy), (cx + 36 * math.sin(a), cy - 36 * math.cos(a)), 4)
             text("Heading %d" % hd, (cx - 40, cy + 44), FS, DIM)
-            text("Emotes", (346, 304), F)
-            for i, (lab, _) in enumerate(emote_table(b.d.model)):
-                bx, by = 346 + (i % 2) * 140, 330 + (i // 2) * 35
-                key = str((i + 1) % 10) if i < 10 else ""
-                button((bx, by, 130, 32), ("%s %s" % (key, lab)).strip(), (lambda l=lab, b=b: (b.emote(l), b.say("Emote: " + l))), col=(255, 190, 70), f=FS)
+            for i, m in enumerate(modes.MODES):
+                sel = b.mode == m
+                button((346 + i * 84, 304, 78, 28), ("> " if sel else "") + m, (lambda m=m, b=b: b.set_mode(m)),
+                       col=(0, 220, 255) if sel else (90, 110, 150), f=FS)
+            if b.mode == "Drive":
+                text("Emotes", (346, 338), FS, DIM)
+                for i, (lab, _) in enumerate(emote_table(b.d.model)):
+                    bx, by = 346 + (i % 2) * 140, 358 + (i // 2) * 31
+                    key = str((i + 1) % 10) if i < 10 else ""
+                    button((bx, by, 130, 28), ("%s %s" % (key, lab)).strip(), (lambda l=lab, b=b: (b.emote(l), b.say("Emote: " + l))), col=(255, 190, 70), f=FS)
+            elif b.mode == "Patrol":
+                text("Patrol: roams by itself, backs off when it bumps,", (346, 340), FS)
+                text("emotes now and then. Any key/stick stops it.", (346, 358), FS)
+                running_p = b.auto is not None
+                button((346, 390, 160, 34), "Stop patrol" if running_p else "Start patrol", (lambda b=b: b.set_mode("Drive") if b.auto else b.set_mode("Patrol")), col=(255, 130, 130) if running_p else (0, 200, 140))
+                button((516, 390, 160, 34), "Patrol ALL", (lambda: [x.set_mode("Patrol") for x in brains()]), col=(0, 200, 140))
+                button((346, 432, 160, 34), "Stop ALL", (lambda: [x.set_mode("Drive") for x in brains()]), col=(255, 130, 130))
+                text("Phase: %s" % (getattr(b.auto, "phase", "-") if b.auto else "stopped"), (346, 480), F, DIM)
+            elif b.mode == "Path":
+                text("Draw a path (start = droid, up = droid's forward):", (346, 340), FS)
+                pygame.draw.rect(screen, (22, 26, 40), CANVAS, border_radius=8)
+                pygame.draw.rect(screen, (70, 80, 110), CANVAS, 1, border_radius=8)
+                pts = b.path_points
+                if len(pts) > 1:
+                    pygame.draw.lines(screen, (0, 220, 255), False, pts, 3)
+                if pts:
+                    pygame.draw.circle(screen, (0, 220, 120), pts[0], 6)
+                if b.auto and isinstance(b.auto, modes.PathMode):
+                    done = b.auto.i / max(1, len(b.auto.segs))
+                    text("Driving... %d%%" % (done * 100), (CANVAS.x + 8, CANVAS.y + 6), FS, ACC)
+                button((346, 602, 100, 26), "Go!", b.start_path, col=(0, 200, 140), enabled=len(pts) > 1 and not b.auto, f=FS)
+                button((452, 602, 100, 26), "Clear", lambda b=b: setattr(b, "path_points", []), col=(200, 200, 200), f=FS)
+            elif b.mode == "Record":
+                rec = b.recorder
+                text("Record driving + emotes, then replay it.", (346, 340), FS)
+                if rec.recording:
+                    text("RECORDING  %.1fs  (%d steps)" % (time.time() - rec.t0, len(rec.events)), (346, 362), F, (255, 80, 80))
+                else:
+                    text("Recording: %.1fs, %d steps" % (rec.length, len(rec.events)), (346, 362), F, DIM)
+                button((346, 392, 104, 32), "Stop" if rec.recording else "Record", (lambda rec=rec: rec.stop() if rec.recording else rec.start()), col=(255, 90, 90), f=FS)
+                button((456, 392, 104, 32), "Play", lambda b=b: b.start_playback(b.recorder.events), col=(0, 200, 140), enabled=bool(rec.events) and not rec.recording and not b.auto, f=FS)
+                button((566, 392, 110, 32), "Save", lambda b=b: b.say("Saved " + os.path.basename(b.recorder.save())), col=(160, 160, 255), enabled=bool(rec.events) and not rec.recording, f=FS)
+                text("Saved recordings (click to load):", (346, 436), FS, DIM)
+                for i, pth in enumerate(state.get("recs", [])[:5]):
+                    button((346, 456 + i * 30, 330, 26), os.path.basename(pth)[:-5], (lambda pth=pth, b=b: (b.recorder.load(pth), b.say("Loaded " + os.path.basename(pth)))), col=(120, 130, 170), f=FS)
+                if frame % 60 == 0:
+                    try:
+                        state["recs"] = modes.list_recordings()
+                    except Exception:
+                        state["recs"] = []
             button((690, 420, 140, 32), "Pat (P)", b.pet, col=(120, 220, 140))
             button((690, 458, 140, 32), "Poke (O)", b.poke, col=(255, 130, 130))
             if b.d.model in ("R2D2", "R2Q5"):
@@ -827,7 +913,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         pygame.draw.rect(screen, PANEL, (864, 70, 300, 634), border_radius=12)
         text("Controls", (880, 80), FB)
         for i, s in enumerate(help_lines):
-            text(s, (880, 118 + i * 21), FS, ACC if s.split(" ")[0].isupper() and len(s.split(" ")[0]) > 4 else TXT)
+            text(s, (880, 118 + i * 21), FS, ACC if s.startswith(("KEYBOARD", "CONTROLLERS")) else TXT)
         for r, cb in buttons:
             for c in clicks:
                 if r.collidepoint(c):
@@ -888,6 +974,34 @@ def selftest():
         x.last_input = 0; x.d.speed_now = 0; x.social_busy = False
     soc.next_chat = 0; soc.update(bs); check(len(soc.script) >= 2, "idle droids chat")
     soc2 = Society(path + "friends"); check(soc2.friendship(bs[0], bs[1]) > 0, "friendship persists")
+    # modes
+    import modes
+    d = MockDroid("R2D2", "m"); b = Brain(d, Personality("m", path + "m"))
+    b.set_mode("Patrol"); moved = 0
+    for i in range(200):
+        b.control(0.05, 0, 0, False); moved += d.speed > 0
+    check(moved > 0 and b.auto is not None, "patrol roams by itself")
+    d.simulate_bump(); b.control(0.05, 0, 0, False); check(b.auto.phase == "backup", "patrol backs up after bump")
+    b.control(0.05, 0, 100, True); check(b.auto is None and b.mode == "Drive", "input stops patrol")
+    segs = modes.path_to_segments([(0, 100), (0, 0), (100, 0)])
+    check(len(segs) == 2 and abs(segs[0][0]) < 1 and abs(segs[1][0] - 90) < 1, "path -> headings")
+    b.mode = "Path"; b.path_points = [(0, 100), (0, 0), (100, 0)]; b.start_path(); hs = set()
+    for i in range(400):
+        b.control(0.05, 0, 0, False); hs.add(d.heading if d.speed else None)
+    check({0, 90} <= hs and b.auto is None, "path drive follows both legs then stops")
+    b.set_mode("Record"); b.recorder.start(); b.recorder.t0 -= 1
+    b.control(0.05, 45, 120, True); b.emote("Happy"); b.recorder.t0 -= 1; b.control(0.05, 45, 0, True); b.recorder.stop()
+    p = b.recorder.save("selftest"); r2 = modes.Recorder(); r2.load(p); os.remove(p)
+    check(len(r2.events) >= 3, "recording saved + loaded")
+    d.calls.clear(); b.start_playback(r2.events); sp = []
+    for i in range(80):
+        b.control(0.05, 0, 0, False); sp.append(d.speed)
+    check(120 in sp and ("emote", "Happy") in d.calls and b.auto is None, "playback replays drive + emote")
+    bs2 = [Brain(MockDroid(m, "p" + m), Personality("p" + m, path + "p" + m)) for m in SUPPORTED]
+    for x in bs2: x.set_mode("Patrol")
+    for i in range(100):
+        for x in bs2: x.control(0.05, 0, 0, False)
+    check(all(x.auto for x in bs2), "multi-droid patrol")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
