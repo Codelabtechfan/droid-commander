@@ -1229,7 +1229,7 @@ def selftest():
           and um.pick_asset([{"name": "x.zip"}]) is None and um.pick_asset([{"name": "a.EXE"}])["name"] == "a.EXE", "asset selection")
     bat = um.write_swap_script("C:\\t\\n.exe", "C:\\My Games\\DroidCommander.exe", [1234, 99], "v9.9.9")
     txt = open(bat).read(); os.remove(bat)
-    check("APPDATA" not in txt.upper() and "PID eq 1234" in txt and "PID eq 99" in txt and "move /y" in txt and "timeout" not in txt
+    check(data_dir().lower() not in txt.lower() and "PID eq 1234" in txt and "PID eq 99" in txt and "move /y" in txt and "timeout" not in txt
           and '"C:\\My Games\\DroidCommander.exe"' in txt and "DroidCommander-new.exe" in txt, "swap script waits for both pids, quotes paths, has fallback")
     lp = path + "updlog"
     open(lp, "w").write("START v9.9.9\nOK v9.9.9\n"); check("still on" in um.read_last_result("1.2.2", lp), "detects version not changed")
