@@ -20,5 +20,14 @@ Not made by or connected to Sphero, Disney or Lucasfilm. It uses no movie logos,
 - **Path**: draw a line on the canvas and press **Go!**. The droid follows it, with "up" on the screen being the way the droid is facing. Distances are rough guesses based on time.
 - **Record**: press Record, drive and play emotes, then press Stop. **Play** replays it and **Save** keeps it, so you can load it again later.
 
+## Force Band (experimental)
+Click **Force Band (experimental)** at the bottom left.
+- **Real bands:** Sphero never published how the Force Band talks over Bluetooth, and nobody has documented it online. This app makes a best guess, using the same unlock code and messages as the droids and reading the band's motion sensor. It may not connect, or the gestures may not be detected properly. If it fails, check `log.txt`.
+- **Demo band:** works for everything without a band. Do gestures with the keys I (push), K (pull), J (left), L (right), U (up) and M (stop), or with the on-screen buttons.
+- **Control:** push drives forward, pull drives backward, left/right turn and go, stop stops, and up makes the droid cheer. It controls the droid that's selected.
+- **Data Cubes:** a hunting game with 30 collectible cubes. Aim the scanner (with the band, or point the mouse with the Demo band) until the signal is strong and it locks on, then do a PULL to grab the cube. Your collection is saved in `data_cubes.json`.
+- **Reflex** (do the gesture that's shown before time runs out) and **Duel** (block the training bot's attacks, then push to strike) are training games. They use simple made-up sounds.
+- Holocrons you collected in the old official app were stored in your Sphero account, not on the band, so they can't be brought into this app.
+
 ## Personality
 Each droid remembers its mood, energy, XP, level, bumps and pats, plus its friendships with your other droids. All of this is saved in `%APPDATA%\DroidCommander`. When droids are connected together they greet each other, chat when they're idle, show off tricks, and react when another droid crashes or goes fast. If something breaks, look in `%APPDATA%\DroidCommander\log.txt`.

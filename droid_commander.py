@@ -583,7 +583,7 @@ class Society:
 # ---------------------------------------------------------------- GUI
 def run_gui(demo=False, selftest_frames=0, demo_count=1):
     import pygame
-    import modes
+    import modes, band as bandmod
     pygame.init()
     pygame.joystick.init()
     W, H = 1180, 720
@@ -595,6 +595,15 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     FS = pygame.font.SysFont("segoeui,arial,dejavusans", 14)
     BG, PANEL, ACC, TXT, DIM = (18, 22, 34), (30, 36, 54), (0, 170, 255), (235, 240, 250), (140, 150, 170)
     society = Society()
+    sounds = bandmod.make_sounds(pygame)
+    def sfx(n):
+        if n in sounds:
+            try: sounds[n].play()
+            except Exception: pass
+    bs_ = {"band": None, "found": [], "tab": "Control", "game": None, "hunt": None, "drive_until": 0, "drive_off": 0,
+           "last_g": "", "last_g_t": 0, "msg": "", "ping_t": 0, "scanning": False}
+    cubes = bandmod.CubeCollection(os.path.join(data_dir(), "data_cubes.json"))
+    GKEYS = {getattr(pygame, "K_" + v.lower()): g for g, v in bandmod.GESTURE_KEYS.items()}
     state = {"found": [], "scanning": False, "status": "Press SCAN to look for droids", "brains": [],
              "active": 0, "connecting": 0, "max": 160, "heading": {}, "busy_addrs": set()}
     joys = {}      # instance_id -> joystick
@@ -700,6 +709,96 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         base = order.index(iid) if iid in order else 0
         return bs[(base + joy_map.get(iid, 0)) % len(bs)]
 
+    def band_scan():
+        bs_["scanning"] = True; bs_["msg"] = "Looking for a band (wake it up first)..."
+        def w():
+            try:
+                bs_["found"] = bandmod.scan_bands()
+                bs_["msg"] = "Found %d possible band(s)." % len(bs_["found"]) if bs_["found"] else "No band found. Real band support is experimental."
+            except Exception as e:
+                bs_["msg"] = "Band scan failed: %s" % e
+            bs_["scanning"] = False
+        threading.Thread(target=w, daemon=True).start()
+
+    def band_connect(bd):
+        bs_["msg"] = "Connecting to %s..." % bd.name
+        def w():
+            if bd.connect():
+                bs_["band"] = bd; bs_["msg"] = "%s connected!" % bd.name
+            else:
+                bs_["msg"] = "Could not connect: %s" % (bd.error or "timed out")
+        threading.Thread(target=w, daemon=True).start()
+
+    def set_tab(t):
+        bs_["tab"] = t
+        bs_["game"] = bandmod.ReflexTrainer() if t == "Reflex" else bandmod.DuelTrainer() if t == "Duel" else None
+        bs_["hunt"] = bandmod.CubeHunt(cubes) if t == "Data Cubes" else None
+
+    def draw_band():
+        now = time.time()
+        text("Force Band  (experimental)", (346, 106), FB, (255, 170, 70))
+        bd = bs_["band"]
+        text(("Band: %s" % bd.name) if bd else "No band connected", (346, 140), F, DIM)
+        if not bd:
+            button((346, 168, 150, 32), "Scan for band", band_scan, col=(255, 170, 70), enabled=not bs_["scanning"], f=FS)
+            button((506, 168, 150, 32), "Demo band", lambda: band_connect(bandmod.DemoBand()), col=(150, 120, 255), f=FS)
+            for i, fb in enumerate(bs_["found"][:3]):
+                button((666, 168 + i * 36, 170, 32), fb.name, (lambda fb=fb: band_connect(fb)), col=(0, 200, 140), f=FS)
+        else:
+            button((666, 140, 170, 30), "Disconnect band", lambda: (bd.disconnect(), bs_.__setitem__("band", None)), col=(255, 100, 100), f=FS)
+        text(bs_["msg"], (346, 206), FS, TXT)
+        for i, t in enumerate(["Control", "Data Cubes", "Reflex", "Duel"]):
+            sel = bs_["tab"] == t
+            button((346 + i * 120, 232, 112, 28), ("> " if sel else "") + t, (lambda t=t: set_tab(t)), col=(0, 220, 255) if sel else (90, 110, 150), f=FS)
+        # gesture buttons (also keys I K J L U M)
+        text("Gestures (band, keys or buttons):", (346, 272), FS, DIM)
+        for i, g in enumerate(bandmod.GESTURES):
+            hot = bs_["last_g"] == g and now - bs_["last_g_t"] < 0.6
+            button((346 + i * 81, 292, 76, 28), "%s %s" % (bandmod.GESTURE_KEYS[g], g), (lambda g=g: bs_["band"] and bs_["band"].events.append(g)),
+                   col=(255, 230, 120) if hot else (200, 170, 90), enabled=bool(bd), f=FS)
+        y0 = 336
+        tab = bs_["tab"]
+        if tab == "Control":
+            tgt = active()
+            for i, s_ in enumerate(["Push = drive forward     Pull = drive backward",
+                                    "Left / Right = turn and go     Stop = stop", "Up = cheer (emote)",
+                                    "Controls the selected droid: %s" % (tgt.d.name if tgt else "none connected"),
+                                    "", "Real bands: the gesture reading is a best guess", "and may need tuning."]):
+                text(s_, (346, y0 + i * 24), F if i < 4 else FS, TXT if i < 4 else DIM)
+        elif tab == "Data Cubes":
+            h = bs_["hunt"]
+            n = len(cubes.found)
+            text("Data Cubes found: %d / %d" % (n, len(bandmod.CUBE_NAMES)), (346, y0), F)
+            text(h.msg if h else "", (346, y0 + 24), FS, (255, 220, 120))
+            cx, cy = 510, 470
+            aim = bs_.get("aim", 0); sig = h.signal(aim) if h and h.idx is not None else 0
+            pygame.draw.circle(screen, (40, 46, 66), (cx, cy), 80)
+            pygame.draw.circle(screen, (int(60 + 195 * sig), int(200 * sig), 80), (cx, cy), int(10 + 60 * sig))
+            a = math.radians(aim)
+            pygame.draw.line(screen, ACC, (cx, cy), (cx + 78 * math.sin(a), cy - 78 * math.cos(a)), 4)
+            text("Aim with the band (demo: point the mouse)", (346, 560), FS, DIM)
+            bar(346, 600, 330, sig, (255, 120, 60), "Signal")
+            bar(346, 640, 330, (h.lock / 2) if h else 0, (0, 220, 120), "Lock")
+            for i, k in enumerate(sorted(cubes.found, key=lambda k: -cubes.found[k])[:8]):
+                text("#%d %s" % (int(k) + 1, bandmod.CUBE_NAMES[int(k)]), (690, y0 + 30 + i * 20), FS, (180, 220, 255))
+        else:
+            gm = bs_["game"]
+            if tab == "Reflex":
+                text("Do the gesture before time runs out!", (346, y0), F)
+                if gm:
+                    text(gm.prompt.upper() if not gm.over else "GAME OVER", (346, y0 + 40), FB, (255, 220, 120))
+                    bar(346, y0 + 100, 330, gm.t / gm.limit if not gm.over else 0, (0, 170, 255), "Time")
+                    text("Score %d    Lives %d" % (gm.score, gm.lives), (346, y0 + 130), F)
+            else:
+                text("Block the training bot: Left/Right/Up match its attack,", (346, y0), FS)
+                text("then PUSH to strike while it's open.", (346, y0 + 18), FS)
+                if gm:
+                    lab = ("OPEN! PUSH!" if gm.opening > 0 else "Attack: %s" % gm.attack.upper()) if not gm.over else ("YOU WIN!" if gm.bot_hp <= 0 else "Defeated...")
+                    text(lab, (346, y0 + 50), FB, (255, 220, 120))
+                    bar(346, y0 + 120, 160, gm.hp / 5, (0, 220, 120), "You")
+                    bar(516, y0 + 120, 160, gm.bot_hp / 6, (255, 90, 90), "Training bot")
+            button((346, 600, 140, 32), "Restart", lambda: set_tab(tab), col=(0, 200, 140), f=FS)
+
     running, frame, last = True, 0, time.time()
     emote_keys = [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0]
     while running:
@@ -721,6 +820,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 j = pygame.joystick.Joystick(ev.device_index); joys[j.get_instance_id()] = j
             elif ev.type == pygame.JOYDEVICEREMOVED:
                 joys.pop(ev.instance_id, None)
+            elif ev.type == pygame.KEYDOWN and ev.key in GKEYS and bs_["band"] and isinstance(bs_["band"], bandmod.DemoBand):
+                bs_["band"].events.append(GKEYS[ev.key])
             elif ev.type == pygame.KEYDOWN and b:
                 tbl = emote_table(b.d.model)
                 if ev.key == pygame.K_TAB:
@@ -771,6 +872,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     pb.turn_dome(15 if j.get_axis(2) > 0 else -15)
             except Exception:
                 pass
+        if b and now < bs_["drive_until"] and not drive[id(b)][2]:
+            drive[id(b)] = [(state["heading"].get(id(b), 0) + bs_["drive_off"]) % 360, state["max"], False]
         for x in list(brains()):
             h, sp, had = drive[id(x)]
             x.control(dt, h, sp, had)
@@ -780,6 +883,52 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 x.p.save(); brains().remove(x); state["busy_addrs"].discard(getattr(x, "key", None))
                 state["status"] = "Lost connection to %s." % x.d.name
         society.update(brains())
+        # ---- Force Band
+        bd = bs_["band"]
+        gests = []
+        if bd:
+            if not bd.connected:
+                bs_["msg"] = "Band disconnected. %s" % (bd.error or ""); bs_["band"] = None
+            else:
+                gests = bd.poll()
+        for g in gests:
+            bs_["last_g"], bs_["last_g_t"] = g, now
+            sfx("swoosh")
+        if bs_["tab"] == "Control" and b and gests:
+            g = gests[-1]
+            if g in ("push", "pull", "left", "right"):
+                bs_["drive_off"] = {"push": 0, "pull": 180, "left": -90, "right": 90}[g]
+                if g in ("left", "right"):
+                    state["heading"][id(b)] = (state["heading"].get(id(b), 0) + bs_["drive_off"]) % 360; bs_["drive_off"] = 0
+                bs_["drive_until"] = now + 1.5
+                if b.auto: b.set_mode("Drive")
+            elif g == "stop":
+                bs_["drive_until"] = 0; b.say("Band: stop!")
+            elif g == "up":
+                lab = pick(b.d.model, "fast"); b.emote(lab); b.say("Band lifts %s's spirits: %s" % (b.d.name, lab))
+        if bs_["tab"] == "Data Cubes" and bs_["hunt"]:
+            hb = bs_["band"]
+            if hb and type(hb) is not bandmod.DemoBand:
+                aim = hb.pointing
+            else:
+                mx, my = pygame.mouse.get_pos(); aim = math.degrees(math.atan2(mx - 510, -(my - 470))) % 360
+            bs_["aim"] = aim
+            got = bs_["hunt"].update(dt, aim, gests)
+            sig = bs_["hunt"].signal(aim)
+            if now - bs_["ping_t"] > 1.2 - sig:
+                bs_["ping_t"] = now; sfx("ping")
+            if got:
+                sfx("found"); bs_["msg"] = "You found " + got + "!"
+                for x in brains():
+                    x.emote(pick(x.d.model, "fast"), xp=0); x.p.add_xp(10)
+        if bs_["tab"] in ("Reflex", "Duel") and bs_["game"]:
+            r = bs_["game"].update(dt, gests)
+            if r:
+                sfx({"hit": "hit", "strike": "clash", "block": "clash", "miss": "miss", "over": "lose", "win": "win", "lose": "lose"}.get(r, "hit"))
+                if b and r in ("win", "strike"):
+                    b.emote(pick(b.d.model, "fast"), xp=0)
+                if b and r in ("lose",):
+                    b.emote(pick(b.d.model, "idle_sad"), xp=0)
         b = active()
 
         # ---- draw
@@ -816,12 +965,16 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             bar(42, y + 56, 120, (bt or 0) / 100, (0, 170, 255), None, 10)
             bar(172, y + 56, 120, (x.p.mood + 100) / 200, (255, 200, 0), None, 10)
             y += 90
-        text("Controllers: %d   connecting: %d" % (len(joys), state["connecting"]), (32, 680), FS, DIM)
+        bl = "Force Band (experimental)" + ("  [on]" if bs_["band"] else "")
+        button((32, 640, 270, 32), ("< Back to droids" if state.get("page") == "band" else bl), lambda: state.__setitem__("page", "droid" if state.get("page") == "band" else "band"), col=(255, 160, 60), f=FS)
+        text("Controllers: %d   connecting: %d" % (len(joys), state["connecting"]), (32, 682), FS, DIM)
 
         # middle: active droid
         text(state["status"], (330, 74), FS, TXT)
         pygame.draw.rect(screen, PANEL, (330, 96, 520, 608), border_radius=12)
-        if b:
+        if state.get("page") == "band":
+            draw_band()
+        elif b:
             p = b.p
             text("%s  -  %s" % (b.d.name, PRETTY.get(b.d.model, b.d.model)), (346, 106), FB)
             text("Level %d   XP %d   Mood: %s" % (p.level, p.xp, p.mood_name), (346, 142), F, DIM)
@@ -924,6 +1077,16 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         pygame.display.flip()
         clock.tick(60)
         frame += 1
+        if selftest_frames:  # exercise the band screens in the self-test
+            if frame == 20:
+                state["page"] = "band"; bs_["band"] = bandmod.DemoBand(); bs_["band"].connect()
+            for fr, tb in ((25, "Control"), (40, "Data Cubes"), (55, "Reflex"), (70, "Duel")):
+                if frame == fr:
+                    set_tab(tb)
+            if 20 < frame < 85 and frame % 5 == 0 and bs_["band"]:
+                bs_["band"].events.append(random.choice(bandmod.GESTURES))
+            if os.environ.get("DC_SHOT") and frame in (35, 50, 80):
+                pygame.image.save(screen, "/tmp/band%d.png" % frame)
         if selftest_frames and frame >= selftest_frames:
             running = False
     for x in list(brains()):
@@ -1002,6 +1165,23 @@ def selftest():
     for i in range(100):
         for x in bs2: x.control(0.05, 0, 0, False)
     check(all(x.auto for x in bs2), "multi-droid patrol")
+    # force band (gesture detector with synthetic accelerometer data, cubes, games)
+    import band as bandmod
+    def flick(axis, sign):
+        det = bandmod.GestureDetector(); t = 0; out = []
+        for i in range(40):
+            t += 0.03; out.append(det.feed(t, 0, 0, 1))
+        for v in (0.8, 2.0, 2.5, 1.0):
+            t += 0.03; vec = [0, 0, 1]; vec["xyz".index(axis)] += sign * v; out.append(det.feed(t, *vec))
+        return [g for g in out if g]
+    check(flick("y", 1)[:1] == ["push"] and flick("y", -1)[:1] == ["pull"], "band push/pull gestures")
+    check(flick("x", -1)[:1] == ["left"] and flick("x", 1)[:1] == ["right"] and flick("z", 1)[:1] == ["up"], "band side/up gestures")
+    cc = bandmod.CubeCollection(path + "cubes"); h = bandmod.CubeHunt(cc); got = None
+    for i in range(30):
+        got = h.update(0.1, h.target, ["pull"]) or got
+    check(got and len(bandmod.CubeCollection(path + "cubes").found) == 1, "data cube hunt + save")
+    rt = bandmod.ReflexTrainer(); rt.update(0.1, [rt.prompt]); check(rt.score == 1, "reflex trainer scores")
+    dt_ = bandmod.DuelTrainer(); dt_.update(0.1, [dt_.BLOCK[dt_.attack]]); dt_.update(0.1, ["push"]); check(dt_.bot_hp == 5, "duel block + strike")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
