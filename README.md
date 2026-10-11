@@ -30,6 +30,8 @@ Click **Force Band** at the bottom left.
 - Holocrons you collected in the old official app were stored in your Sphero account, not on the band, so they can't be brought into this app.
 
 ## Updates
+If an update ever fails, the app tells you next time it starts. The new version is then saved next to the old one as `DroidCommander-new.exe`, so you can run that instead.
+
 When a new version comes out, a green banner pops up at the top. Click **Update now**, then **Restart & update**. You can also click **Check for updates** in the Controls panel. Your droids' memories, recordings and Data Cubes are never touched.
 
 ## Personality

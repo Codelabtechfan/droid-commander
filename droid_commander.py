@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -596,6 +596,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     BG, PANEL, ACC, TXT, DIM = (18, 22, 34), (30, 36, 54), (0, 170, 255), (235, 240, 250), (140, 150, 170)
     society = Society()
     upd = updmod.Updater(VERSION)
+    upd_msg = None if selftest_frames else updmod.read_last_result(VERSION)
+    updmod.cleanup_old()
     if not selftest_frames:
         upd.check()
     sounds = bandmod.make_sounds(pygame)
@@ -608,7 +610,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     cubes = bandmod.CubeCollection(os.path.join(data_dir(), "data_cubes.json"))
     GKEYS = {getattr(pygame, "K_" + v.lower()): g for g, v in bandmod.GESTURE_KEYS.items()}
     state = {"found": [], "scanning": False, "status": "Press SCAN to look for droids", "brains": [],
-             "active": 0, "connecting": 0, "max": 160, "heading": {}, "busy_addrs": set()}
+             "active": 0, "connecting": 0, "upd_msg": upd_msg, "max": 160, "heading": {}, "busy_addrs": set()}
     joys = {}      # instance_id -> joystick
     joy_map = {}   # instance_id -> brain index offset (which droid this pad drives)
 
@@ -1093,6 +1095,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             else:
                 text("Update failed: %s" % upd.error[:40], (344, 14), F)
                 button((776, 18, 64, 36), "OK", lambda: setattr(upd, "dismissed", True), col=(180, 180, 180), f=FS)
+        if state.get("upd_msg"):
+            r_ = pygame.Rect(330, 8, 520, 56)
+            good = state["upd_msg"].startswith("Updated")
+            pygame.draw.rect(screen, (40, 120, 70) if good else (150, 90, 30), r_, border_radius=10)
+            words, line, ly = state["upd_msg"].split(), "", 12
+            for w_ in words:
+                if F.size(line + w_)[0] > 400:
+                    text(line, (344, ly), FS); line, ly = "", ly + 18
+                line += w_ + " "
+            text(line, (344, ly), FS)
+            button((776, 18, 64, 36), "OK", lambda: state.__setitem__("upd_msg", None), col=(180, 180, 180), f=FS)
         if state.get("quit"):
             running = False
         for r, cb in buttons:
@@ -1214,9 +1227,15 @@ def selftest():
     check(um.is_newer("v1.10.0", "1.9.9") and not um.is_newer("v1.2.0", "1.2.0") and um.is_newer("1.2.1", "1.2"), "version compare")
     check(um.pick_asset([{"name": "src.zip"}, {"name": "Other.exe"}, {"name": "DroidCommander.exe"}])["name"] == "DroidCommander.exe"
           and um.pick_asset([{"name": "x.zip"}]) is None and um.pick_asset([{"name": "a.EXE"}])["name"] == "a.EXE", "asset selection")
-    bat = um.write_swap_script("C:\\t\\n.exe", "C:\\a\\DroidCommander.exe", 1234)
+    bat = um.write_swap_script("C:\\t\\n.exe", "C:\\My Games\\DroidCommander.exe", [1234, 99], "v9.9.9")
     txt = open(bat).read(); os.remove(bat)
-    check("APPDATA" not in txt.upper() and "1234" in txt and "move /y" in txt, "swap script only touches exe")
+    check("APPDATA" not in txt.upper() and "PID eq 1234" in txt and "PID eq 99" in txt and "move /y" in txt and "timeout" not in txt
+          and '"C:\\My Games\\DroidCommander.exe"' in txt and "DroidCommander-new.exe" in txt, "swap script waits for both pids, quotes paths, has fallback")
+    lp = path + "updlog"
+    open(lp, "w").write("START v9.9.9\nOK v9.9.9\n"); check("still on" in um.read_last_result("1.2.2", lp), "detects version not changed")
+    open(lp, "w").write("START v1.2.2\nOK v1.2.2\n"); check(um.read_last_result("1.2.2", lp).startswith("Updated"), "detects successful update")
+    open(lp, "w").write('FAILED v1.2.3 "C:\\x\\DroidCommander-new.exe"\n'); check("DroidCommander-new.exe" in um.read_last_result("1.2.2", lp), "reports fallback file")
+    check(um.read_last_result("1.2.2", lp) is None, "log removed after reading")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
@@ -1236,7 +1255,7 @@ def main():
         code = selftest()
         if getattr(sys, "frozen", False):
             with open(os.path.join(os.getcwd(), "selftest_result.txt"), "w") as f:
-                f.write("OK" if code == 0 else "FAILED")
+                f.write(("OK" if code == 0 else "FAILED") + " " + VERSION)
         sys.exit(code)
     try:
         run_gui(demo="--demo" in sys.argv)

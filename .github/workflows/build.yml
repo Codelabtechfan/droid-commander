@@ -15,6 +15,20 @@ jobs:
           $env:SDL_VIDEODRIVER="dummy"; $env:SDL_AUDIODRIVER="dummy"
           $p = Start-Process dist\DroidCommander.exe -ArgumentList "--selftest" -Wait -PassThru
           Get-Content selftest_result.txt
-          if ((Get-Content selftest_result.txt) -ne "OK") { exit 1 }
+          $v = (Select-String -Path droid_commander.py -Pattern '^VERSION = "(.*)"').Matches[0].Groups[1].Value
+          if ((Get-Content selftest_result.txt) -ne "OK $v") { Write-Error "expected OK $v"; exit 1 }
       - uses: actions/upload-artifact@v4
         with: {name: DroidCommander, path: dist/DroidCommander.exe}
+      - name: Test update swap helper on real Windows
+        shell: pwsh
+        run: |
+          $d = "$env:RUNNER_TEMP\My Games"; New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item C:\Windows\System32\whoami.exe "$d\DroidCommander.exe"
+          Copy-Item C:\Windows\System32\hostname.exe "$env:RUNNER_TEMP\new.exe"
+          $want = (Get-FileHash "$env:RUNNER_TEMP\new.exe").Hash
+          $bat = python -c "import updater; print(updater.write_swap_script(r'$env:RUNNER_TEMP\new.exe', r'$d\DroidCommander.exe', [999999], 'v0.0.1'))"
+          cmd /c $bat
+          Start-Sleep 3
+          Get-Content "$env:TEMP\DroidCommanderUpdate.log"
+          if ((Get-FileHash "$d\DroidCommander.exe").Hash -ne $want) { Write-Error "swap failed"; exit 1 }
+          if (-not (Select-String -Path "$env:TEMP\DroidCommanderUpdate.log" -Pattern "^OK v0.0.1")) { exit 1 }
