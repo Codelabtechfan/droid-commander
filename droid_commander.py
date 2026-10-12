@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 ONBOARD_IDLE_MODELS = ("BB9E", "R2D2", "R2Q5")  # spherov2 Animatronic.enable_idle_animations (CID 44)
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
@@ -1129,6 +1129,20 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1, layout_size=None):
             except Exception as e:
                 state["status"] = "Open the folder yourself: %s" % data_dir()
         button((690, 104, 140, 30), "Open folder", open_folder, col=(0, 200, 140), f=FS)
+        def probe():
+            if state.get("probing"):
+                return
+            state["probing"] = True; state["status"] = "Probing Force Band (read-only, ~30 s)... keep it awake and nearby."
+            def w():
+                try:
+                    import bandprobe
+                    pth = bandprobe.run_probe(data_dir(), log=log)
+                    state["status"] = "Probe saved (%s) - Open folder" % os.path.basename(pth)
+                except Exception as e:
+                    log("band probe error: %r" % e); state["status"] = "Probe failed: %s" % e
+                state["probing"] = False
+            threading.Thread(target=w, daemon=True).start()
+        button((540, 104, 140, 30), "Probing..." if state.get("probing") else "Probe band", probe, col=(150, 120, 255), enabled=not state.get("probing"), f=FS)
         if frame % 30 == 0 or "loglines" not in state:
             try:
                 with open(lp, encoding="utf-8", errors="replace") as f:
@@ -1851,6 +1865,13 @@ def selftest():
     d = MockDroid("R2D2", "cd"); b = Brain(d, Personality("cd", path + "cd")); b.turn_dome(90); b.centre_dome()
     check(b.dome == 0 and d.calls[-1][0] in ("dome", "dome_to") and d.calls[-1][1] == 0, "centre dome sends 0")
     import keybinds as _kb; check(_kb.DEFAULTS["dome_centre"][1] == "v" and _kb.DEFAULTS["dome_centre"][3] == 9, "centre dome keybind")
+    import bandprobe as bp
+    from spherov2.controls.v2 import Packet as _P2
+    check(all(bp.v2_packet(d_, c_, i) == _P2(0x0A, d_, c_, i, None, None, bytearray()).build() for i, (d_, c_, _) in enumerate(bp.V2_QUERIES)), "band probe: v2 query packets match spherov2")
+    try:
+        bp.v2_packet(17, 4, 0); check(False, "band probe refuses non-whitelisted commands")
+    except AssertionError:
+        check(True, "band probe refuses non-whitelisted commands")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     for sz in ((960, 540), (1024, 576), (1280, 720), (1920, 1080)):
         try:
