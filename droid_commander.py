@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 ONBOARD_IDLE_MODELS = ("BB9E", "R2D2", "R2Q5")  # spherov2 Animatronic.enable_idle_animations (CID 44)
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
@@ -195,10 +195,62 @@ class MockDroid:
             self.on_sensor(kind)
 
 
+class FreshBleakAdapter:
+    """spherov2 BleakAdapter replacement: no cached GATT services (Windows), verifies services before the first
+    write, settles briefly after connecting, and always tears the link down if set-up fails."""
+    def __init__(self, address):
+        import asyncio, bleak
+        self._loop = asyncio.new_event_loop()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+        try:
+            self._dev = bleak.BleakClient(address, timeout=10.0, winrt={"use_cached_services": False})
+        except TypeError:
+            self._dev = bleak.BleakClient(address, timeout=10.0)
+        try:
+            self._exec(self._dev.connect(), 25)
+            time.sleep(0.8)  # let Windows finish service discovery
+            svcs = self._dev.services
+            uuids = {c.uuid.lower() for sv in svcs for c in sv.characteristics}
+            log("[ble] %s connected, %d characteristics discovered" % (address, len(uuids)))
+            need = {"00020005-574f-4f20-5370-6865726f2121", "00010002-574f-4f20-5370-6865726f2121"}
+            missing = [u for u in need if u not in uuids]
+            if missing and len(uuids) < 4:
+                raise RuntimeError("BLE services not fully discovered (stale Windows cache); missing %s" % missing)
+        except BaseException:
+            self.close(True)
+            raise
+
+    def _exec(self, coro, timeout=15):
+        import asyncio
+        with self._lock:
+            return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+
+    def close(self, disconnect=True):
+        if disconnect:
+            try:
+                self._exec(self._dev.disconnect(), 8)
+            except Exception as e:
+                log("[ble] disconnect: %r" % e)
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop); self._thread.join(5); self._loop.close()
+        except Exception:
+            pass
+
+    def set_callback(self, uuid, cb):
+        self._exec(self._dev.start_notify(uuid, cb))
+
+    def write(self, uuid, data):
+        self._exec(self._dev.write_gatt_char(uuid, data, True))
+
+
 class RealDroid:
     """Runs spherov2's SpheroEduAPI inside a worker thread; GUI talks to it via thread-safe calls."""
     def __init__(self, toy):
         self.toy = toy
+        if hasattr(toy, "_Toy__adapter_cls"):
+            toy._Toy__adapter_cls = FreshBleakAdapter  # fresh GATT discovery every connect
         self.model = type(toy).__name__
         self.name = getattr(toy, "name", None) or PRETTY.get(self.model, self.model)
         self.connected = False
@@ -215,11 +267,11 @@ class RealDroid:
         self._ready = threading.Event()
         self._t = None
 
-    def connect(self, timeout=30, attempts=3, status=None):
+    def connect(self, timeout=40, attempts=5, status=None):
         """Connect with retries + backoff. Cleans up a stale/failed BLE link before each retry."""
         for i in range(1, attempts + 1):
             if i > 1:
-                wait = 2 * (i - 1)
+                wait = min(6, 2 * (i - 1))
                 if status:
                     status("Retrying %s %d/%d in %ds..." % (self.name, i, attempts, wait))
                 time.sleep(wait)
@@ -877,7 +929,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 state["status"] = "Connected to %s (%s). %d droid(s) online." % (droid.name, PRETTY.get(droid.model, droid.model), len(brains()))
             else:
                 state["busy_addrs"].discard(key)
-                state["status"] = "Could not connect to %s after 3 tries (%s). Tips: wake it (off charger, shake), close the Sphero phone app, move closer, turn Bluetooth off/on, then SCAN again." % (droid.name, (getattr(droid, "error", None) or "timed out")[:40])
+                state["status"] = "Could not connect to %s. Turn the droid off and on, then reconnect (SCAN again). Also close the Sphero phone app and move closer. (%s)" % (droid.name, (getattr(droid, "error", None) or "timed out")[:40])
                 log("connect gave up: %s" % droid.name)
             state["connecting"] -= 1
         threading.Thread(target=w, daemon=True).start()
@@ -1732,7 +1784,7 @@ def selftest():
             self._ready.set()
     _sl = time.sleep; time.sleep = lambda x: None
     msgs = []; fd = FlakyDroid(); okc = fd.connect(timeout=2, status=msgs.append); time.sleep = _sl
-    check(okc and fd.tries == 3 and any("Retrying" in m and "3/3" in m for m in msgs), "connect retries with status")
+    check(okc and fd.tries == 3 and any("Retrying" in m and "3/5" in m for m in msgs), "connect retries with status")
     fd2 = FlakyDroid(); fd2.tries = -99; time.sleep = lambda x: None; ok2 = fd2.connect(timeout=1, attempts=3); time.sleep = _sl
     check(not ok2 and fd2.tries == -96, "connect gives up after 3 attempts")
     pp = path + "toggles"; pq = Personality("tg", pp); pq.human_on = False; pq.save()
