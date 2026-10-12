@@ -1349,7 +1349,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text("Firmware %s   Battery %s" % (getattr(b.d, "firmware", None) or "?", getattr(b.d, "battery_label", None) or (("%d%%" % b.d.get_battery()) if b.d.get_battery() is not None else "checking...")), (346, 142), F, DIM)
             bl_ = getattr(b.d, "battery_label", "") or ""
             if "Low" in bl_ or "Critical" in bl_:
-                text("Battery low - the droid may ignore motor commands. Charge it.", (346, 230), FS, (255, 170, 60))
+                text("Battery low (info only) - the droid itself may move weakly or refuse to drive.", (346, 230), FS, (255, 170, 60))
             if getattr(b.d, "errors", 0):
                 text("%d command error(s): %s  - see Debug log" % (b.d.errors, b.d.last_error[:50]), (346, 164), FS, (255, 120, 120))
             button((734, 108, 100, 30), "Disconnect", lambda b=b: disconnect(b), col=(255, 100, 100), f=FS)
