@@ -40,7 +40,6 @@ class Personality:
         self.drive_seconds = 0.0
         self.last_seen = None
         self.human_on = True   # idle emotes, greetings, reactions to you
-        self.droid_on = True   # greeting/chatting/reacting with other droids
         self.onboard_idle = True  # droid's own built-in idle animations (BB-9E/R2-D2/R2-Q5 only)
         self.load()
 
@@ -48,14 +47,14 @@ class Personality:
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
-            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on", "onboard_idle"):
+            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "onboard_idle"):
                 if k in d:
                     setattr(self, k, d[k])
         except Exception:
             pass
 
     def save(self):
-        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on", "onboard_idle")}
+        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "onboard_idle")}
         d["last_seen"] = time.time()
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -440,7 +439,6 @@ class Brain:
         droid.on_collision = self._bump
         self.dome = 0
         self.stance = "tripod"
-        self.signals = []  # events other droids can react to
         self.joined = time.time()
         import modes
         self.mode = "Drive"
@@ -562,7 +560,7 @@ class Brain:
         if frac > 0.75:
             self.fast_since = self.fast_since or now
             if now - self.fast_since > 3 and now - self.last_react > 12:
-                self.say("Wheee! %s loves going fast!" % self.d.name); self.signals.append("fast")
+                self.say("Wheee! %s loves going fast!" % self.d.name)
                 self.p.add_xp(3); self.p.nudge(5); self.react(pick(self.d.model, "fast"))
                 self.fast_since = now
         else:
@@ -571,9 +569,10 @@ class Brain:
             self.bump_flag = False
             self.p.bumps += 1; self.p.nudge(-4)
             if now - self.last_react > 2:
-                self.say("Ouch! %s bumped into something." % self.d.name); self.signals.append("bump")
+                self.say("Ouch! %s bumped into something." % self.d.name)
                 self.react(pick(self.d.model, "bump"))
-        if speed == 0 and now > self.next_idle and not getattr(self, 'social_busy', False) and not self.p.human_on:
+        if speed == 0 and now > self.next_idle and (not self.p.human_on or self.d.model in ONBOARD_IDLE_MODELS):
+            # droids with on-board idle animations do their own idle behaviour (like the official app)
             self.next_idle = now + 30
         elif speed == 0 and now > self.next_idle and not getattr(self, 'social_busy', False):
             kind = "idle_happy" if self.p.mood > 40 else "idle_sad" if self.p.mood < -20 else "idle"
@@ -583,109 +582,6 @@ class Brain:
             if self.d.model in ("R2D2", "R2Q5") and random.random() < 0.5:
                 self.turn_dome(random.choice([-90, -45, 45, 90]) - self.dome)
             self.next_idle = now + random.uniform(20, 45)
-
-
-# ---------------------------------------------------------------- droid-to-droid social life
-class Society:
-    """Friendships between connected droids, persisted in friends.json. Drives greetings, chats and reactions."""
-    def __init__(self, path=None):
-        self.path = path or os.path.join(data_dir(), "friends.json")
-        try:
-            with open(self.path, encoding="utf-8") as f:
-                self.friends = json.load(f)
-        except Exception:
-            self.friends = {}
-        self.known = set()
-        self.next_chat = time.time() + random.uniform(15, 30)
-        self.script = []  # pending (time, brain, label, text)
-
-    @staticmethod
-    def key(a, b):
-        return "|".join(sorted([a.p.droid_id, b.p.droid_id]))
-
-    def friendship(self, a, b):
-        return self.friends.get(self.key(a, b), 0)
-
-    def bond(self, a, b, n):
-        k = self.key(a, b); self.friends[k] = max(-100, min(100, self.friends.get(k, 0) + n))
-
-    def save(self):
-        with open(self.path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(self.friends, f, indent=1)
-        os.replace(self.path + ".tmp", self.path)
-
-    def queue(self, steps):
-        t = time.time()
-        for delay, b, lab, txt in steps:
-            t += delay; self.script.append((t, b, lab, txt))
-        for _, b, _, _ in steps:
-            b.social_busy = True
-
-    def update(self, brains):
-        now = time.time()
-        brains = [b for b in brains if b.p.droid_on]  # droids with Droid interactions off are invisible here
-        ids = {id(b) for b in brains}
-        self.script = [x for x in self.script if id(x[1]) in ids]
-        due = [x for x in self.script if x[0] <= now]
-        self.script = [x for x in self.script if x[0] > now]
-        for _, b, lab, txt in due:
-            if lab:
-                b.emote(lab, xp=0)
-            if txt:
-                b.say(txt)
-        busy = {id(x[1]) for x in self.script}
-        for b in brains:
-            b.social_busy = id(b) in busy
-        # greetings for newcomers
-        for b in brains:
-            if id(b) not in self.known:
-                self.known.add(id(b))
-                for o in brains:
-                    if o is not b:
-                        fr = self.friendship(b, o)
-                        mood = "best friend" if fr > 50 else "friend" if fr > 10 else "new pal" if fr > -10 else "rival"
-                        self.queue([(3, o, pick(o.d.model, "greet"), "%s spots %s (%s) and says hi!" % (o.d.name, b.d.name, mood)),
-                                    (2.5, b, pick(b.d.model, "greet" if fr > -10 else "poke"), "%s waves back." % b.d.name)])
-                        self.bond(b, o, 3)
-        self.known &= ids
-        # reactions to signals
-        for b in brains:
-            while b.signals:
-                sig = b.signals.pop(0)
-                for o in brains:
-                    if o is b or o.social_busy:
-                        continue
-                    fr = self.friendship(b, o)
-                    if sig == "bump":
-                        if fr >= 0:
-                            self.queue([(1.5, o, pick(o.d.model, "missed" if fr > 30 else "bump"), "%s worries about %s." % (o.d.name, b.d.name))]); self.bond(b, o, 2)
-                        else:
-                            self.queue([(1.5, o, pick(o.d.model, "fast"), "%s laughs at %s's crash!" % (o.d.name, b.d.name))])
-                    elif sig == "fast":
-                        self.queue([(1, o, pick(o.d.model, "fast" if fr >= 0 else "poke"), "%s cheers %s on!" % (o.d.name, b.d.name) if fr >= 0 else "%s is jealous of %s's speed." % (o.d.name, b.d.name))])
-                        self.bond(b, o, 1)
-        # idle chats / playful sequences
-        idle = [b for b in brains if b.d.speed_now == 0 and now - b.last_input > 8 and not b.social_busy] if len(brains) > 1 else []
-        if len(idle) >= 2 and now > self.next_chat:
-            a, b = random.sample(idle, 2)
-            fr = self.friendship(a, b)
-            if random.random() < 0.35:
-                self.queue([(0, a, None, "%s shows off a trick for %s!" % (a.d.name, b.d.name)),
-                            (0.5, a, pick(a.d.model, "fast"), None),
-                            (3, b, pick(b.d.model, "pet" if fr >= 0 else "poke"), "%s %s." % (b.d.name, "is impressed" if fr >= 0 else "isn't impressed"))])
-            else:
-                topic = random.choice(["the weather", "batteries", "who is faster", "funny noises", "their favourite spot"])
-                steps = [(0, a, pick(a.d.model, "idle"), "%s chats with %s about %s." % (a.d.name, b.d.name, topic))]
-                for i in range(random.randint(2, 4)):
-                    who = b if i % 2 == 0 else a
-                    steps.append((3, who, pick(who.d.model, "idle_happy" if fr >= -10 else "poke"), None))
-                steps.append((3, a, pick(a.d.model, "pet"), "%s and %s had a nice chat." % (a.d.name, b.d.name) if fr >= -10 else "%s and %s argued!" % (a.d.name, b.d.name)))
-                self.queue(steps)
-            self.bond(a, b, 4); a.p.add_xp(2); b.p.add_xp(2)
-            for x in (a, b):
-                x.next_idle = now + 40
-            self.next_chat = now + random.uniform(25, 50)
-            self.save()
 
 
 # ---------------------------------------------------------------- GUI
@@ -722,7 +618,6 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     FB = pygame.font.SysFont("segoeui,arial,dejavusans", 26, bold=True)
     FS = pygame.font.SysFont("segoeui,arial,dejavusans", 14)
     BG, PANEL, ACC, TXT, DIM = (18, 22, 34), (30, 36, 54), (0, 170, 255), (235, 240, 250), (140, 150, 170)
-    society = Society()
     kb = kbmod.Keybinds(os.path.join(data_dir(), "keybinds.json"))
     upd = updmod.Updater(VERSION)
     upd_msg = None if selftest_frames else updmod.read_last_result(VERSION)
@@ -806,7 +701,6 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         if b in brains():
             brains().remove(b)
         state["busy_addrs"].discard(getattr(b, "key", None))
-        society.save()
         state["status"] = "Disconnected %s. Its memory was saved." % b.d.name
 
     def demo_add():
@@ -848,8 +742,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                   "Z/C: dome (R2)   X: stance (R2)", "Space: stop   Esc: disconnect", "",
                   "CONTROLLERS (one per droid)", "Pad 1 -> droid 1, pad 2 -> droid 2...", "Back/View: switch pad's droid",
                   "Left stick: drive   Right stick X: dome", "RT: boost   LT: slow", "A/B/X/Y: emotes   LB: pat",
-                  "RB: stance   Start: random emote", "", "Idle droids chat to each other,", "greet newcomers and react",
-                  "to each other's bumps."]
+                  "RB: stance   Start: random emote"]
 
     def pad_target(iid):
         bs = brains()
@@ -1092,7 +985,6 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             if not isinstance(x.d, MockDroid) and not x.d.connected:
                 x.p.save(); brains().remove(x); state["busy_addrs"].discard(getattr(x, "key", None))
                 state["status"] = "Lost connection to %s." % x.d.name
-        society.update(brains())
         # ---- Force Band
         bd = bs_["band"]
         gests = []
@@ -1204,9 +1096,6 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             bar(346, 240, 230, (batt or 0) / 100, (0, 170, 255), "Battery: %s" % ("%d%%" % batt if batt is not None else "checking..."))
             bar(596, 240, 230, sp / 255, (255, 120, 60), "Speed  (max %d)" % state["max"])
             text("Bumps %d  Pats %d  Visits %d  Drive %dm" % (p.bumps, p.pets, p.sessions, p.drive_seconds // 60), (346, 266), FS, DIM)
-            others = [o for o in brains() if o is not b]
-            if others:
-                text("Friends: " + "  ".join("%s %+d" % (o.d.name, society.friendship(b, o)) for o in others), (346, 284), FS, (255, 200, 120))
             cx, cy = 760, 350
             hd = drive.get(id(b), [0])[0]
             pygame.draw.circle(screen, (50, 56, 76), (cx, cy), 40, 3)
@@ -1329,7 +1218,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             else:
                 buttons.clear()
                 ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
-                r_ = pygame.Rect(340, 190, 500, 340)
+                r_ = pygame.Rect(340, 190, 500, 290)
                 pygame.draw.rect(screen, PANEL, r_, border_radius=14); pygame.draw.rect(screen, ACC, r_, 2, border_radius=14)
                 text("%s settings" % sf.d.name, (360, 216), FB)
                 def tog(attr, sf=sf):
@@ -1338,27 +1227,26 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 def tog_idle(sf=sf):
                     sf.p.onboard_idle = not sf.p.onboard_idle; sf.p.save(); sf.d.set_onboard_idle(sf.p.onboard_idle)
                 def all_off(sf=sf):
-                    v = not (sf.p.human_on or sf.p.droid_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS))
-                    sf.p.human_on = sf.p.droid_on = v; sf.p.save()
+                    v = not (sf.p.human_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS))
+                    sf.p.human_on = v; sf.p.save()
                     if sf.d.model in ONBOARD_IDLE_MODELS:
                         sf.p.onboard_idle = v; sf.p.save(); sf.d.set_onboard_idle(v)
-                rows = [("Human interactions", "Idle emotes, greetings, reactions to you", "human_on"),
-                        ("Droid interactions", "Greeting, chatting, reacting to other droids", "droid_on")]
+                rows = [("Human interactions", "Greetings + reactions to driving, pats, bumps", "human_on")]
                 for i, (lab, sub, attr) in enumerate(rows):
                     yy = 262 + i * 64
                     text(lab, (360, yy), F); text(sub, (360, yy + 24), FS, DIM)
                     on = getattr(sf.p, attr)
                     button((730, yy + 4, 90, 34), "ON" if on else "OFF", (lambda a=attr: tog(a)), col=(0, 200, 120) if on else (120, 120, 130))
-                yy = 390
+                yy = 326
                 if sf.d.model in ONBOARD_IDLE_MODELS:
                     text("On-board idle animations", (360, yy), F); text("The droid's own built-in idle moves", (360, yy + 24), FS, DIM)
                     button((730, yy + 4, 90, 34), "ON" if sf.p.onboard_idle else "OFF", tog_idle, col=(0, 200, 120) if sf.p.onboard_idle else (120, 120, 130))
                 else:
                     text("On-board idle animations: not supported on %s" % PRETTY.get(sf.d.model, sf.d.model), (360, yy + 8), FS, DIM)
-                anyon = sf.p.human_on or sf.p.droid_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS)
-                button((360, 456, 220, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
-                text("Saved in this droid's memory; re-sent on every connect.", (360, 500), FS, DIM)
-                button((720, 456, 100, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
+                anyon = sf.p.human_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS)
+                button((360, 400, 220, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
+                text("Saved in this droid's memory; re-sent on every connect.", (360, 446), FS, DIM)
+                button((720, 400, 100, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
         cs = state.get("confirm_sleep")
         if cs:
             if cs not in brains():
@@ -1424,7 +1312,6 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             running = False
     for x in list(brains()):
         disconnect(x)
-    society.save()
     pygame.quit()
     return state
 
@@ -1458,18 +1345,8 @@ def selftest():
         b.update(0.1, 90, 255, True); check(d.speed == 255 and d.heading == 90, "drive %s" % m)
         d.simulate_bump(); b.last_react = 0; b.update(0.1, 0, 0, False)
         check(b.p.bumps == 1 and len(d.calls) >= 2, "bump reaction %s" % m)
-        b.next_idle = 0; n = len(d.calls); b.update(0.1, 0, 0, False); check(len(d.calls) > n, "idle reaction %s" % m)
-    # multi-droid social test
-    soc = Society(path + "friends")
-    bs = [Brain(MockDroid(m, "s" + m), Personality("s" + m, path + "s" + m)) for m in ("R2D2", "BB8")]
-    soc.update(bs); check(len(soc.script) >= 2, "newcomer greeting queued")
-    soc.script = []; [setattr(x, "social_busy", False) for x in bs]
-    bs[0].signals.append("bump"); soc.update(bs); check(any(x[1] is bs[1] for x in soc.script), "other droid reacts to bump")
-    soc.script = []
-    for x in bs:
-        x.last_input = 0; x.d.speed_now = 0; x.social_busy = False
-    soc.next_chat = 0; soc.update(bs); check(len(soc.script) >= 2, "idle droids chat")
-    soc2 = Society(path + "friends"); check(soc2.friendship(bs[0], bs[1]) > 0, "friendship persists")
+        b.next_idle = 0; n = len(d.calls); b.update(0.1, 0, 0, False)
+        check((len(d.calls) > n) == (m not in ONBOARD_IDLE_MODELS), "idle: app-side for BB-8, on-board for %s" % m)
     # modes
     import modes
     d = MockDroid("R2D2", "m"); b = Brain(d, Personality("m", path + "m"))
@@ -1569,21 +1446,16 @@ def selftest():
                 self.connected = True
             self._ready.set()
     _sl = time.sleep; time.sleep = lambda x: None
-    msgs = []; fd = FlakyDroid(); ok = fd.connect(timeout=2, status=msgs.append); time.sleep = _sl
-    check(ok and fd.tries == 3 and any("Retrying" in m and "3/3" in m for m in msgs), "connect retries with status")
+    msgs = []; fd = FlakyDroid(); okc = fd.connect(timeout=2, status=msgs.append); time.sleep = _sl
+    check(okc and fd.tries == 3 and any("Retrying" in m and "3/3" in m for m in msgs), "connect retries with status")
     fd2 = FlakyDroid(); fd2.tries = -99; time.sleep = lambda x: None; ok2 = fd2.connect(timeout=1, attempts=3); time.sleep = _sl
     check(not ok2 and fd2.tries == -96, "connect gives up after 3 attempts")
     pp = path + "toggles"; pq = Personality("tg", pp); pq.human_on = False; pq.save()
-    check(Personality("tg", pp).human_on is False and Personality("tg", pp).droid_on is True, "interaction toggles persist")
+    check(Personality("tg", pp).human_on is False, "interaction toggle persists")
     d = MockDroid("R2D2", "quiet"); b = Brain(d, Personality("tg", pp)); b.greet(); b.next_idle = 0; b.update(0.1, 0, 0, False)
     d.simulate_bump(); b.last_react = 0; b.update(0.1, 0, 0, False); b.pet()
     check(not any(c[0] == "emote" for c in d.calls), "human interactions off: no automatic emotes")
     b.emote("Happy"); check(("emote", "Happy") in d.calls, "manual emotes still work")
-    soc = Society(path + "fr2"); x1 = Brain(MockDroid("BB8", "a1"), Personality("a1", path + "a1")); x2 = Brain(MockDroid("BB9E", "a2"), Personality("a2", path + "a2"))
-    x2.p.droid_on = False; soc.update([x1, x2]); x1.signals.append("bump"); soc.update([x1, x2])
-    for x in (x1, x2): x.last_input = 0; x.d.speed_now = 0
-    soc.next_chat = 0; soc.update([x1, x2])
-    check(not soc.script and not soc.friendship(x1, x2), "droid interactions off: no greeting/reaction/chat")
     pi = path + "idle"; d = MockDroid("R2D2", "idl"); b = Brain(d, Personality("idl", pi)); b.p.onboard_idle = False; b.greet()
     check(("idle_anim", False) in d.calls and Personality("idl", pi).onboard_idle is False, "on-board idle setting saved + re-applied on connect")
     d8 = MockDroid("BB8", "b8"); Brain(d8, Personality("b8", path + "b8")).greet(); check(not any(c[0] == "idle_anim" for c in d8.calls), "BB-8: no on-board idle command")

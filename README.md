@@ -48,7 +48,10 @@ If an update ever fails, the app tells you next time it starts. The new version 
 When a new version comes out, a green banner pops up at the top. Click **Update now**, then **Restart & update**. You can also click **Check for updates** in the Controls panel. Your droids' memories, recordings and Data Cubes are never touched.
 
 ## Droid settings
-The **Set** button on each droid in the list lets you turn off **Human interactions** (idle emotes, greetings and reactions to you) or **Droid interactions** (greeting, chatting and reacting to other droids), or switch everything off at once. Each droid remembers its own settings.
+The **Set** button on each droid in the list has these options:
+- **Human interactions:** greetings and reactions to being driven fast, patted or bumped.
+- **On-board idle animations:** the droid's own built-in idle moves. This works on BB-9E, R2-D2 and R2-Q5, but not on BB-8. The setting is sent to the droid every time it connects.
+- **All interactions OFF/ON:** switches all of them off or back on at once.
 
 ## Personality
-Each droid remembers its mood, energy, XP, level, bumps and pats, plus its friendships with your other droids. All of this is saved in `%APPDATA%\DroidCommander`. When droids are connected together they greet each other, chat when they're idle, show off tricks, and react when another droid crashes or goes fast. If something breaks, look in `%APPDATA%\DroidCommander\log.txt`.
+Each droid remembers its mood, energy, XP, level, bumps and pats. All of this is saved in `%APPDATA%\DroidCommander`. If something breaks, look in `%APPDATA%\DroidCommander\log.txt`.
