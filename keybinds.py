@@ -9,6 +9,7 @@ DEFAULTS = {  # action: [label, key, key2, pad_button]
     "next_droid": ["Switch droid", "tab", None, None], "disconnect": ["Disconnect", "escape", None, None],
     "reverse": ["Reverse (hold)", "r", None, 4], "aim": ["Aim / calibrate", "h", None, None], "stance": ["Stance (R2)", "x", None, 5],
     "dome_left": ["Dome left (R2)", "z", None, None], "dome_right": ["Dome right (R2)", "c", None, None],
+    "dome_centre": ["Centre dome (R2)", "v", None, 9],
     "random_emote": ["Random emote", None, None, 7], "deep_sleep": ["Deep Sleep", None, None, None], "fullscreen": ["Toggle fullscreen", "f11", None, None], "pad_switch": ["Pad: change droid", None, None, 6],
 }
 for i in range(10):

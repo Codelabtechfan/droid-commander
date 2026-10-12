@@ -13,8 +13,8 @@ Not made by or connected to Sphero, Disney or Lucasfilm. It uses no movie logos,
 ## Controls
 Click **Keybinds** (right panel) to change any key or controller button. Click a box, then press the new key or button (Esc cancels). **Reset defaults** puts the defaults back, and red text means two actions share a key. Your keybinds are saved in `%APPDATA%\DroidCommander\keybinds.json`.
 
-- Keyboard drives the selected droid: Tab or F1-F4 picks which one. WASD/arrows drive, Shift boosts, Q/E change the top speed, 1-0 play emotes, P pats, O pokes, Z/C turn the dome, X changes stance (R2 droids only), Space stops, Esc disconnects.
-- Controllers: pad 1 drives droid 1, pad 2 drives droid 2 and so on. Back/View changes which droid a pad drives. Left stick drives, RT boosts, LT slows, A/B/X/Y play emotes, LB pats, RB changes stance, Start plays a random emote, right stick turns the dome.
+- Keyboard drives the selected droid: Tab or F1-F4 picks which one. WASD/arrows drive, Shift boosts, Q/E change the top speed, 1-0 play emotes, P pats, O pokes, Z/C turn the dome, V centres it, X changes stance (R2 droids only), Space stops, Esc disconnects.
+- Controllers: pad 1 drives droid 1, pad 2 drives droid 2 and so on. Back/View changes which droid a pad drives. Left stick drives, RT boosts, LT slows, A/B/X/Y play emotes, LB pats, RB changes stance, Start plays a random emote, right stick turns the dome, clicking the right stick centres it.
 
 ## Display
 The **Display** button in the right panel switches between Windowed (you can resize it), Full window and Fullscreen. F11 also toggles fullscreen, and you can change that key in Keybinds. The app remembers your choice.
@@ -23,7 +23,7 @@ The **Display** button in the right panel switches between Windowed (you can res
 The **Deep Sleep** button (next to Disconnect) makes the droid say goodnight, saves its memory and switches it fully off. To wake it up again, put it on its charger. You can give it a key in Keybinds; it has none by default.
 
 ## Modes (same as the original droid app, minus the movie and AR modes)
-- **Drive**: drag the drive pad with the mouse, or use the keyboard or a controller. Hold **Boost** to go faster and **Reverse** to back up. There are 9 expression buttons, and R2-D2 and R2-Q5 also get a dome slider and a stance button. **Aim** turns the droid on the spot with its back light on; turn it until the light faces you, then press Done.
+- **Drive**: drag the drive pad with the mouse, or use the keyboard or a controller. Hold **Boost** to go faster and **Reverse** to back up. There are 9 expression buttons, and R2-D2 and R2-Q5 also get a dome slider (with a **Centre** button) and a stance button. **Aim** turns the droid on the spot with its back light on; turn it until the light faces you, then press Done.
 - **Patrol**: the droid roams around by itself, turns away when it hits something, and shows how far it has travelled. "Patrol ALL" sends every droid out.
 - **Draw & Drive**: draw a path and the droid follows it.
 

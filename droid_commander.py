@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 ONBOARD_IDLE_MODELS = ("BB9E", "R2D2", "R2Q5")  # spherov2 Animatronic.enable_idle_animations (CID 44)
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
@@ -645,6 +645,11 @@ class Brain:
             return
         self.dome = max(-160, min(180, self.dome + delta)); self.d.dome_to(self.dome)
 
+    def centre_dome(self):
+        if self.d.model not in ("R2D2", "R2Q5"):
+            return
+        self.dome = 0; self.d.dome_to(0); self.say("Dome centred")
+
     def set_mode(self, mode):
         import modes
         self.auto = None
@@ -1139,6 +1144,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     elif act == "stance": b.toggle_stance()
                     elif act == "dome_left": b.turn_dome(-30)
                     elif act == "dome_right": b.turn_dome(30)
+                    elif act == "dome_centre": b.centre_dome()
                     elif act == "speed_down": state["max"] = max(40, state["max"] - 20)
                     elif act == "speed_up": state["max"] = min(255, state["max"] + 20)
                     elif act == "disconnect": disconnect(b)
@@ -1164,6 +1170,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 elif act == "stance": pb.toggle_stance()
                 elif act == "dome_left": pb.turn_dome(-30)
                 elif act == "dome_right": pb.turn_dome(30)
+                elif act == "dome_centre": pb.centre_dome()
                 elif act == "deep_sleep": ask_sleep(pb)
                 elif act == "next_droid": joy_map[ev.instance_id] = joy_map.get(ev.instance_id, 0) + 1
 
@@ -1380,6 +1387,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     fx = sl.x + (b.dome + 160) / 340 * sl.w
                     pygame.draw.circle(screen, (160, 160, 255), (int(fx), sl.centery), 11)
                     text("Dome  %d" % b.dome, (sl.x, sl.y - 20), FS, DIM)
+                    button((sl.right + 8, sl.centery - 14, 64, 28), "Centre", b.centre_dome, col=(160, 160, 255), f=FS)
             elif b.mode == "Patrol":
                 text("Patrol: roams by itself, backs off when it bumps,", (346, 340), FS)
                 text("emotes now and then. Any key/stick stops it.", (346, 358), FS)
@@ -1767,6 +1775,9 @@ def selftest():
     d = MockDroid("R2D2", "hu"); b = Brain(d, Personality("hu", path + "hu")); d.calls.clear()
     d.simulate("pickup"); b.update(0.1, 0, 0, False); check(any(c[0] == "emote" for c in d.calls) and "pickup" in b.signals, "human interaction: reacts to pick-up")
     b.p.human_on = False; d.calls.clear(); b.last_react = 0; d.simulate("spin"); b.update(0.1, 0, 0, False); check(not any(c[0] == "emote" for c in d.calls), "human interactions off: no reaction")
+    d = MockDroid("R2D2", "cd"); b = Brain(d, Personality("cd", path + "cd")); b.turn_dome(90); b.centre_dome()
+    check(b.dome == 0 and d.calls[-1][0] in ("dome", "dome_to") and d.calls[-1][1] == 0, "centre dome sends 0")
+    import keybinds as _kb; check(_kb.DEFAULTS["dome_centre"][1] == "v" and _kb.DEFAULTS["dome_centre"][3] == 9, "centre dome keybind")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
