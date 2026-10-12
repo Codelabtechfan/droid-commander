@@ -5,6 +5,7 @@ import json, math, os, queue, random, sys, threading, time, traceback
 APP = "Droid Commander"
 VERSION = "1.4.1"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
+ONBOARD_IDLE_MODELS = ("BB9E", "R2D2", "R2Q5")  # spherov2 Animatronic.enable_idle_animations (CID 44)
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
 
@@ -40,20 +41,21 @@ class Personality:
         self.last_seen = None
         self.human_on = True   # idle emotes, greetings, reactions to you
         self.droid_on = True   # greeting/chatting/reacting with other droids
+        self.onboard_idle = True  # droid's own built-in idle animations (BB-9E/R2-D2/R2-Q5 only)
         self.load()
 
     def load(self):
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
-            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on"):
+            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on", "onboard_idle"):
                 if k in d:
                     setattr(self, k, d[k])
         except Exception:
             pass
 
     def save(self):
-        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on")}
+        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on", "onboard_idle")}
         d["last_seen"] = time.time()
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -164,6 +166,9 @@ class MockDroid:
     def lights(self, rgb):
         self.calls.append(("led", rgb))
 
+    def set_onboard_idle(self, on):
+        self.calls.append(("idle_anim", bool(on)))
+
     def deep_sleep(self):
         self.calls.append(("deep_sleep", None)); self.connected = False
 
@@ -254,6 +259,9 @@ class RealDroid:
     def lights(self, rgb):
         self._q.put(("led", rgb))
 
+    def set_onboard_idle(self, on):
+        self._q.put(("idle_anim", bool(on)))
+
     def deep_sleep(self):
         self._q.put(("deep_sleep", None))
         if self._t:
@@ -332,6 +340,12 @@ class RealDroid:
         api, Color = self.api, self.Color
         kind, arg = cmd
         log("[%s] command: %s %s" % (self.name, kind, arg))
+        if kind == "idle_anim":
+            if hasattr(self.toy, "enable_idle_animations"):
+                self._safe(lambda: self.toy.enable_idle_animations(arg), "on-board idle animations %s" % ("on" if arg else "off"))
+            else:
+                log("[%s] on-board idle animations not supported on %s" % (self.name, self.model))
+            return
         if kind == "deep_sleep":
             self._safe(lambda: api.stop_roll())
             ok = False
@@ -448,6 +462,8 @@ class Brain:
             self.emote(label, xp=xp)
 
     def greet(self):
+        if self.d.model in ONBOARD_IDLE_MODELS and hasattr(self.d, "set_onboard_idle"):
+            self.d.set_onboard_idle(self.p.onboard_idle)
         kind = self.p.start_session()
         if kind == "first":
             self.say("%s says hello for the first time!" % self.d.name); self.react(pick(self.d.model, "greet"), xp=0)
@@ -1313,15 +1329,19 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             else:
                 buttons.clear()
                 ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
-                r_ = pygame.Rect(340, 200, 500, 300)
+                r_ = pygame.Rect(340, 190, 500, 340)
                 pygame.draw.rect(screen, PANEL, r_, border_radius=14); pygame.draw.rect(screen, ACC, r_, 2, border_radius=14)
                 text("%s settings" % sf.d.name, (360, 216), FB)
                 def tog(attr, sf=sf):
                     setattr(sf.p, attr, not getattr(sf.p, attr)); sf.p.save()
                     log("[%s] %s = %s" % (sf.d.name, attr, getattr(sf.p, attr)))
+                def tog_idle(sf=sf):
+                    sf.p.onboard_idle = not sf.p.onboard_idle; sf.p.save(); sf.d.set_onboard_idle(sf.p.onboard_idle)
                 def all_off(sf=sf):
-                    v = not (sf.p.human_on or sf.p.droid_on)
+                    v = not (sf.p.human_on or sf.p.droid_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS))
                     sf.p.human_on = sf.p.droid_on = v; sf.p.save()
+                    if sf.d.model in ONBOARD_IDLE_MODELS:
+                        sf.p.onboard_idle = v; sf.p.save(); sf.d.set_onboard_idle(v)
                 rows = [("Human interactions", "Idle emotes, greetings, reactions to you", "human_on"),
                         ("Droid interactions", "Greeting, chatting, reacting to other droids", "droid_on")]
                 for i, (lab, sub, attr) in enumerate(rows):
@@ -1329,10 +1349,16 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     text(lab, (360, yy), F); text(sub, (360, yy + 24), FS, DIM)
                     on = getattr(sf.p, attr)
                     button((730, yy + 4, 90, 34), "ON" if on else "OFF", (lambda a=attr: tog(a)), col=(0, 200, 120) if on else (120, 120, 130))
-                anyon = sf.p.human_on or sf.p.droid_on
-                button((360, 400, 220, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
-                text("Saved in this droid's memory.", (360, 446), FS, DIM)
-                button((720, 446, 100, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
+                yy = 390
+                if sf.d.model in ONBOARD_IDLE_MODELS:
+                    text("On-board idle animations", (360, yy), F); text("The droid's own built-in idle moves", (360, yy + 24), FS, DIM)
+                    button((730, yy + 4, 90, 34), "ON" if sf.p.onboard_idle else "OFF", tog_idle, col=(0, 200, 120) if sf.p.onboard_idle else (120, 120, 130))
+                else:
+                    text("On-board idle animations: not supported on %s" % PRETTY.get(sf.d.model, sf.d.model), (360, yy + 8), FS, DIM)
+                anyon = sf.p.human_on or sf.p.droid_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS)
+                button((360, 456, 220, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
+                text("Saved in this droid's memory; re-sent on every connect.", (360, 500), FS, DIM)
+                button((720, 456, 100, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
         cs = state.get("confirm_sleep")
         if cs:
             if cs not in brains():
@@ -1558,6 +1584,11 @@ def selftest():
     for x in (x1, x2): x.last_input = 0; x.d.speed_now = 0
     soc.next_chat = 0; soc.update([x1, x2])
     check(not soc.script and not soc.friendship(x1, x2), "droid interactions off: no greeting/reaction/chat")
+    pi = path + "idle"; d = MockDroid("R2D2", "idl"); b = Brain(d, Personality("idl", pi)); b.p.onboard_idle = False; b.greet()
+    check(("idle_anim", False) in d.calls and Personality("idl", pi).onboard_idle is False, "on-board idle setting saved + re-applied on connect")
+    d8 = MockDroid("BB8", "b8"); Brain(d8, Personality("b8", path + "b8")).greet(); check(not any(c[0] == "idle_anim" for c in d8.calls), "BB-8: no on-board idle command")
+    from spherov2.toy.bb9e import BB9E as _b9; from spherov2.toy.r2q5 import R2Q5 as _q5; from spherov2.toy.bb8 import BB8 as _b8
+    check(hasattr(_b9, "enable_idle_animations") and hasattr(_q5, "enable_idle_animations") and not hasattr(_b8, "enable_idle_animations"), "idle animation API per model")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
