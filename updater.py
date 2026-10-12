@@ -89,7 +89,22 @@ class Updater:
 
     def restart_into_update(self):
         """Launch the helper (it waits for us to exit, swaps the exe, relaunches). Caller must then quit."""
-        subprocess.Popen(["cmd", "/c", self.bat], creationflags=0x08000000 | 0x00000200, close_fds=True, cwd=tempfile.gettempdir())
+        subprocess.Popen(["cmd", "/c", self.bat], creationflags=0x08000000 | 0x00000200, close_fds=True,
+                         cwd=tempfile.gettempdir(), env=clean_env())
+
+
+def clean_env(env=None):
+    """Environment without PyInstaller's onefile vars / old _MEI paths, so the relaunched exe extracts afresh."""
+    env = dict(os.environ if env is None else env)
+    for k in list(env):
+        ku = k.upper()
+        if ku.startswith("_PYI") or ku.startswith("_MEI") or ku in ("_MEIPASS2", "TCL_LIBRARY", "TK_LIBRARY"):
+            del env[k]
+    for k in list(env):
+        if k.upper() == "PATH":
+            env[k] = ";".join(p for p in env[k].split(";") if "_MEI" not in p)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
 
 
 LOG_NAME = "DroidCommanderUpdate.log"
@@ -112,7 +127,7 @@ def write_swap_script(new_exe, target_exe, pids, version="?"):
              'echo START %s>"%%LOG%%"' % version, 'set n=0', ':wait']
     for p in pids:
         lines.append('tasklist /FI "PID eq %d" /NH /FO CSV 2>nul | findstr /c:"\\"%d\\"" >nul && goto sleep' % (p, p))
-    lines += ['goto swap', ':sleep', 'set /a n+=1', 'if !n! geq 90 goto swap', 'ping -n 2 127.0.0.1 >nul', 'goto wait',
+    lines += ['echo all processes gone>>"%LOG%"', 'ping -n 3 127.0.0.1 >nul', 'goto swap', ':sleep', 'set /a n+=1', 'if !n! geq 90 goto swap', 'ping -n 2 127.0.0.1 >nul', 'goto wait',
               ':swap', 'echo processes gone after !n!s>>"%LOG%"', 'set m=0', 'if exist "%s" del /f /q "%s" >nul 2>&1' % (old, old),
               ':tryold', 'move /y "%s" "%s" >nul 2>&1' % (target_exe, old), 'if not errorlevel 1 goto trynew',
               'set /a m+=1', 'if !m! geq 60 goto fail', 'ping -n 2 127.0.0.1 >nul', 'goto tryold',
@@ -120,7 +135,10 @@ def write_swap_script(new_exe, target_exe, pids, version="?"):
               'move /y "%s" "%s" >nul 2>&1' % (old, target_exe), 'goto fail',
               ':ok', 'del /f /q "%s" >nul 2>&1' % old, 'echo OK %s>>"%%LOG%%"' % version, 'goto launch',
               ':fail', 'copy /y "%s" "%s" >nul 2>&1' % (new_exe, fallback), 'echo FAILED %s "%s">>"%%LOG%%"' % (version, fallback),
-              ':launch', 'cd /d "%s"' % d, 'start "" "%s"' % target_exe, '(goto) 2>nul & del "%~f0"']
+              ':launch', 'ping -n 3 127.0.0.1 >nul',
+              'for /f "delims==" %%V in (\'set _PYI 2^>nul\') do set "%%V="',
+              'for /f "delims==" %%V in (\'set _MEI 2^>nul\') do set "%%V="',
+              'set "PYINSTALLER_RESET_ENVIRONMENT=1"', 'cd /d "%s"' % d, 'start "" "%s"' % target_exe, '(goto) 2>nul & del "%~f0"']
     bat = os.path.join(tempfile.gettempdir(), "droidcommander_update.bat")
     with open(bat, "w") as f:
         f.write("\r\n".join(lines) + "\r\n")
