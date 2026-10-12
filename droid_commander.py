@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.4.5"
+VERSION = "1.4.6"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 ONBOARD_IDLE_MODELS = ("BB9E", "R2D2", "R2Q5")  # spherov2 Animatronic.enable_idle_animations (CID 44)
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
@@ -837,7 +837,7 @@ class DroidInteractions:
 
 
 # ---------------------------------------------------------------- GUI
-def run_gui(demo=False, selftest_frames=0, demo_count=1):
+def run_gui(demo=False, selftest_frames=0, demo_count=1, layout_size=None):
     import pygame
     import modes, band as bandmod, updater as updmod, keybinds as kbmod
     pygame.init()
@@ -848,6 +848,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     dispmod.enable_dpi_awareness()
     dset = dispmod.Settings(os.path.join(data_dir(), "settings.json"))
     window = dispmod.apply_mode(pygame, dset.display, dset.window_size)
+    if layout_size:
+        window = pygame.display.set_mode(layout_size)
     screen = pygame.Surface((W, H))  # everything draws here; scaled to the window each frame
     def mpos():
         return dispmod.to_canvas(pygame.mouse.get_pos(), window.get_size(), (W, H))
@@ -1096,9 +1098,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             button((346, 600, 140, 32), "Restart", lambda: set_tab(tab), col=(0, 200, 140), f=FS)
 
     PAD_C, PAD_R = (430, 420), 78
-    DOME_SLIDER = pygame.Rect(528, 492, 148, 14)
-    HOLD_BOOST = pygame.Rect(690, 458, 140, 32)
-    HOLD_REV = pygame.Rect(690, 496, 140, 32)
+    # droid panel columns (canvas coords; the canvas is scaled to every window size/mode):
+    # left = drive pad (346-516), middle = expressions + dome row (520-680), right = dial + action buttons (690-830)
+    MID_X, MID_W, RIGHT_X, RIGHT_W = 520, 160, 690, 140
+    EXPR_Y, EXPR_ROW, EXPR_H = 324, 30, 26
+    EXPR_BOTTOM = EXPR_Y + 4 * EXPR_ROW + EXPR_H            # 5 rows reserved (9 expressions)
+    DOME_SLIDER = pygame.Rect(MID_X, EXPR_BOTTOM + 30, 90, 14)
+    DOME_CENTRE = pygame.Rect(MID_X + 96, EXPR_BOTTOM + 23, MID_W - 96, 28)
+    AIM_BTN = pygame.Rect(RIGHT_X, 400, RIGHT_W, 32)
+    HOLD_BOOST = pygame.Rect(RIGHT_X, 438, RIGHT_W, 32)
+    HOLD_REV = pygame.Rect(RIGHT_X, 476, RIGHT_W, 32)
+    STANCE_BTN = pygame.Rect(RIGHT_X, 514, RIGHT_W, 32)
 
     def aim_toggle(b):
         if state.get("aim") is b:
@@ -1401,7 +1411,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text("Firmware %s   Battery %s" % (getattr(b.d, "firmware", None) or "?", getattr(b.d, "battery_label", None) or (("%d%%" % b.d.get_battery()) if b.d.get_battery() is not None else "checking...")), (346, 142), F, DIM)
             bl_ = getattr(b.d, "battery_label", "") or ""
             if "Low" in bl_ or "Critical" in bl_:
-                text("Battery low (info only) - the droid itself may move weakly or refuse to drive.", (346, 230), FS, (255, 170, 60))
+                text("Battery low (info only) - the droid itself may move weakly or refuse to drive.", (346, 248), FS, (255, 170, 60))
             if getattr(b.d, "errors", 0):
                 text("%d command error(s): %s  - see Debug log" % (b.d.errors, b.d.last_error[:50]), (346, 164), FS, (255, 120, 120))
             button((734, 108, 100, 30), "Disconnect", lambda b=b: disconnect(b), col=(255, 100, 100), f=FS)
@@ -1411,7 +1421,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             bar(346, 200, 230, (batt or 0) / 100, (0, 170, 255), "Battery")
             bar(596, 200, 230, abs(sp) / 255, (255, 120, 60), "Speed  (max %d)%s" % (state["max"], "  REVERSE" if sp < 0 else ""))
             text("Distance travelled: %.1f m" % getattr(b.d, "distance", 0), (596, 230), FS, DIM)
-            cx, cy = 760, 350
+            cx, cy = 760, 330
             hd = drive.get(id(b), [0])[0]
             pygame.draw.circle(screen, (50, 56, 76), (cx, cy), 40, 3)
             a = math.radians(hd)
@@ -1429,17 +1439,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 kx, ky = state.get("pad_vec", (0, 0))
                 pygame.draw.circle(screen, ACC, (int(pc[0] + kx * PAD_R), int(pc[1] + ky * PAD_R)), 22)
                 text("Drive pad", (pc[0] - 30, pc[1] + PAD_R + 4), FS, DIM)
-                text("Expressions", (528, 306), FS, DIM)
+                text("Expressions", (MID_X, EXPR_Y - 20), FS, DIM)
                 for i, (lab, _) in enumerate(emote_table(b.d.model)[:9]):
-                    bx, by = 528 + (i % 2) * 76, 326 + (i // 2) * 32
-                    button((bx, by, 72, 28), lab[:9], (lambda l=lab, b=b: b.user_expression(l)), col=(255, 190, 70), f=FS)
+                    bx, by = MID_X + (i % 2) * 80, EXPR_Y + (i // 2) * EXPR_ROW
+                    button((bx, by, 76, EXPR_H), lab[:9], (lambda l=lab, b=b: b.user_expression(l)), col=(255, 190, 70), f=FS)
                 if b.d.model in ("R2D2", "R2Q5"):
                     sl = DOME_SLIDER
                     pygame.draw.rect(screen, (50, 56, 76), sl, border_radius=6)
                     fx = sl.x + (b.dome + 160) / 340 * sl.w
                     pygame.draw.circle(screen, (160, 160, 255), (int(fx), sl.centery), 11)
                     text("Dome  %d" % b.dome, (sl.x, sl.y - 20), FS, DIM)
-                    button((sl.right + 8, sl.centery - 14, 64, 28), "Centre", b.centre_dome, col=(160, 160, 255), f=FS)
+                    button(DOME_CENTRE, "Centre", b.centre_dome, col=(160, 160, 255), f=FS)
             elif b.mode == "Patrol":
                 text("Patrol: roams by itself, backs off when it bumps,", (346, 340), FS)
                 text("emotes now and then. Any key/stick stops it.", (346, 358), FS)
@@ -1481,20 +1491,20 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     except Exception:
                         state["recs"] = []
             aiming = state.get("aim") is b
-            button((690, 420, 140, 32), "Done aiming" if aiming else "Aim", (lambda b=b: aim_toggle(b)), col=(0, 220, 255) if aiming else (120, 200, 255))
+            button(AIM_BTN, "Done aiming" if aiming else "Aim", (lambda b=b: aim_toggle(b)), col=(0, 220, 255) if aiming else (120, 200, 255))
             for rr, lab_, key_ in ((HOLD_BOOST, "Boost (hold)", "boost"), (HOLD_REV, "Reverse (hold)", "reverse")):
                 held = state.get("hold_" + key_)
                 pygame.draw.rect(screen, (255, 230, 120) if held else (200, 170, 90), rr, border_radius=8)
                 t_ = FS.render(lab_, True, (10, 12, 20)); screen.blit(t_, t_.get_rect(center=rr.center))
             if b.d.model in ("R2D2", "R2Q5"):
-                button((690, 534, 140, 32), "Stance (X)", b.toggle_stance, col=(160, 160, 255))
+                button(STANCE_BTN, "Stance (X)", b.toggle_stance, col=(160, 160, 255))
             if aiming:
                 text("AIM: turn with Left/Right or drag the pad sideways,", (346, 600), FS, (0, 220, 255))
                 text("until the back light faces you. Then press Done.", (346, 618), FS, (0, 220, 255))
             if isinstance(b.d, MockDroid):
-                button((690, 610, 68, 26), "Pick up", lambda: b.d.simulate("pickup"), col=(200, 200, 200), f=FS)
-                button((762, 610, 68, 26), "Spin", lambda: b.d.simulate("spin"), col=(200, 200, 200), f=FS)
-                button((690, 572, 140, 32), "Fake bump", b.d.simulate_bump, col=(200, 200, 200))
+                button((RIGHT_X, 594, 68, 26), "Pick up", lambda: b.d.simulate("pickup"), col=(200, 200, 200), f=FS)
+                button((RIGHT_X + 72, 594, 68, 26), "Spin", lambda: b.d.simulate("spin"), col=(200, 200, 200), f=FS)
+                button((RIGHT_X, 556, RIGHT_W, 32), "Fake bump", b.d.simulate_bump, col=(200, 200, 200))
             evs = sorted([e for x in brains() for e in x.events])[-4:]
             yy = 694 - 18 * len(evs)
             for t0, s in evs:
@@ -1611,6 +1621,12 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         sc, off, ssz = dispmod.fit(ws, (W, H))
         window.fill((0, 0, 0))
         window.blit(screen if ssz == (W, H) else pygame.transform.smoothscale(screen, ssz), off)
+        if layout_size and frame == selftest_frames - 1:
+            rs = [r for r, _ in buttons] + [HOLD_BOOST, HOLD_REV]
+            if brains() and brains()[state["active"]].d.model in ("R2D2", "R2Q5"):
+                rs.append(DOME_SLIDER.inflate(0, 20))
+            state["layout_rects"] = [tuple(r) for r in rs]
+            pygame.image.save(window, "/tmp/layout_%dx%d.png" % tuple(layout_size))
         pygame.display.flip()
         clock.tick(60)
         frame += 1
@@ -1654,6 +1670,11 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
 
 
 # ---------------------------------------------------------------- selftest
+def pygame_rect(r):
+    import pygame
+    return pygame.Rect(r)
+
+
 def selftest():
     import tempfile
     ok = True
@@ -1831,6 +1852,14 @@ def selftest():
     check(b.dome == 0 and d.calls[-1][0] in ("dome", "dome_to") and d.calls[-1][1] == 0, "centre dome sends 0")
     import keybinds as _kb; check(_kb.DEFAULTS["dome_centre"][1] == "v" and _kb.DEFAULTS["dome_centre"][3] == 9, "centre dome keybind")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    for sz in ((960, 540), (1024, 576), (1280, 720), (1920, 1080)):
+        try:
+            st = run_gui(demo=True, selftest_frames=12, demo_count=1, layout_size=sz)
+            rs = [pygame_rect(r) for r in st.get("layout_rects", []) if r[0] >= 340]  # droid panel (sidebar cards hold nested buttons)
+            bad = [(a, b_) for i, a in enumerate(rs) for b_ in rs[i + 1:] if a.colliderect(b_)]
+            check(len(rs) > 10 and not bad, "droid panel layout %dx%d: %d widgets, no overlaps %s" % (sz[0], sz[1], len(rs), bad[:2]))
+        except Exception as e:
+            traceback.print_exc(); check(False, "layout %s: %r" % (sz, e))
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
         check(st.get("fallback_ok"), "display switching survives a failing mode (falls back to Windowed)")
