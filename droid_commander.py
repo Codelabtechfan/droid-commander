@@ -1626,7 +1626,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1, layout_size=None):
             if brains() and brains()[state["active"]].d.model in ("R2D2", "R2Q5"):
                 rs.append(DOME_SLIDER.inflate(0, 20))
             state["layout_rects"] = [tuple(r) for r in rs]
-            pygame.image.save(window, "/tmp/layout_%dx%d.png" % tuple(layout_size))
+            import tempfile as _tf; pygame.image.save(window, os.path.join(_tf.gettempdir(), "layout_%dx%d.png" % tuple(layout_size)))
         pygame.display.flip()
         clock.tick(60)
         frame += 1
