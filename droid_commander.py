@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -618,7 +618,20 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     pygame.init()
     pygame.joystick.init()
     W, H = 1180, 720
-    screen = pygame.display.set_mode((W, H))
+    pygame.display.init()
+    import display as dispmod
+    dispmod.enable_dpi_awareness()
+    dset = dispmod.Settings(os.path.join(data_dir(), "settings.json"))
+    window = dispmod.apply_mode(pygame, dset.display, dset.window_size)
+    screen = pygame.Surface((W, H))  # everything draws here; scaled to the window each frame
+    def mpos():
+        return dispmod.to_canvas(pygame.mouse.get_pos(), window.get_size(), (W, H))
+    def set_display(mode):
+        nonlocal window
+        if dset.display == "Windowed" and mode != "Windowed":
+            dset.window_size = list(window.get_size())
+        dset.display = mode; dset.save()
+        window = dispmod.apply_mode(pygame, mode, dset.window_size)
     pygame.display.set_caption("%s %s" % (APP, VERSION))
     clock = pygame.time.Clock()
     F = pygame.font.SysFont("segoeui,arial,dejavusans", 18)
@@ -721,7 +734,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
 
     def button(rect, label, cb, col=ACC, enabled=True, f=None):
         r = pygame.Rect(rect)
-        hov = r.collidepoint(pygame.mouse.get_pos()) and enabled
+        hov = r.collidepoint(mpos()) and enabled
         c = col if enabled else (70, 75, 90)
         if hov:
             c = tuple(min(255, x + 40) for x in c)
@@ -853,8 +866,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         button((690, 104, 140, 30), "Reset defaults", kb.reset, col=(255, 130, 130), f=FS)
         bad = kb.conflicts()
         for i, a in enumerate(kbmod.ORDER):
-            col_, row = i // 19, i % 19
-            x, y = 346 + col_ * 255, 160 + row * 27
+            col_, row = i // 20, i % 20
+            x, y = 346 + col_ * 255, 158 + row * 26
             text(kb.label(a)[:17], (x, y + 5), FS, (255, 110, 110) if a in bad else TXT)
             kname = " / ".join(kb.keys(a)) or "-"
             p_ = kb.b[a]["pad"]
@@ -873,14 +886,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
+            elif ev.type == pygame.VIDEORESIZE and dset.display == "Windowed":
+                dset.window_size = [max(480, ev.w), max(300, ev.h)]; dset.save()
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                clicks.append(ev.pos)
-                if b and b.mode == "Path" and CANVAS.collidepoint(ev.pos) and not b.auto:
-                    b.path_points = [ev.pos]; state["drawing"] = True
+                cp = dispmod.to_canvas(ev.pos, window.get_size(), (W, H))
+                clicks.append(cp)
+                if b and b.mode == "Path" and CANVAS.collidepoint(cp) and not b.auto:
+                    b.path_points = [cp]; state["drawing"] = True
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 state["drawing"] = False
-            elif ev.type == pygame.MOUSEMOTION and state.get("drawing") and b and CANVAS.collidepoint(ev.pos):
-                b.path_points.append(ev.pos)
+            elif ev.type == pygame.MOUSEMOTION and state.get("drawing") and b and CANVAS.collidepoint(dispmod.to_canvas(ev.pos, window.get_size(), (W, H))):
+                b.path_points.append(dispmod.to_canvas(ev.pos, window.get_size(), (W, H)))
             elif ev.type == pygame.JOYDEVICEADDED:
                 j = pygame.joystick.Joystick(ev.device_index); joys[j.get_instance_id()] = j
             elif ev.type == pygame.JOYDEVICEREMOVED:
@@ -895,6 +911,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     kb.set_pad(act, ev.button)
             elif ev.type == pygame.KEYDOWN:
                 act = kb.action_for_key(pygame.key.name(ev.key))
+                if act == "fullscreen":
+                    set_display("Windowed" if dset.display == "Fullscreen" else "Fullscreen"); continue
                 if act and act.startswith("band_"):
                     if bs_["band"] and isinstance(bs_["band"], bandmod.DemoBand):
                         bs_["band"].events.append(act[5:])
@@ -994,7 +1012,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             if hb and type(hb) is not bandmod.DemoBand:
                 aim = hb.pointing
             else:
-                mx, my = pygame.mouse.get_pos(); aim = math.degrees(math.atan2(mx - 510, -(my - 470))) % 360
+                mx, my = mpos(); aim = math.degrees(math.atan2(mx - 510, -(my - 470))) % 360
             bs_["aim"] = aim
             got = bs_["hunt"].update(dt, aim, gests)
             sig = bs_["hunt"].signal(aim)
@@ -1155,6 +1173,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text(s, (880, 118 + i * 21), FS, ACC if s.startswith(("KEYBOARD", "CONTROLLERS")) else TXT)
         st = upd.status
         lbl = {"checking": "Checking...", "uptodate": "Up to date (v%s)" % VERSION, "offline": "Offline - try again"}.get(st, "Check for updates")
+        button((880, 586, 268, 30), "Display: %s  (F11)" % dset.display, lambda: set_display(dispmod.next_mode(dset.display)), col=(160, 160, 255), f=FS)
         button((880, 624, 268, 30), "< Back" if state.get("page") == "keys" else "Keybinds", lambda: state.__setitem__("page", "droid" if state.get("page") == "keys" else "keys"), col=(0, 200, 255), f=FS)
         button((880, 662, 268, 30), lbl, upd.check, col=(120, 130, 170), enabled=st not in ("checking", "downloading"), f=FS)
         if st in ("available", "downloading", "ready", "error") and not upd.dismissed:
@@ -1211,6 +1230,10 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                         cb()
                     except Exception as e:
                         log(traceback.format_exc()); state["status"] = "Error: %s" % e
+        ws = window.get_size()
+        sc, off, ssz = dispmod.fit(ws, (W, H))
+        window.fill((0, 0, 0))
+        window.blit(screen if ssz == (W, H) else pygame.transform.smoothscale(screen, ssz), off)
         pygame.display.flip()
         clock.tick(60)
         frame += 1
@@ -1224,6 +1247,10 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 bs_["band"].events.append(random.choice(bandmod.GESTURES))
             if frame == 86:
                 state["page"] = "keys"
+            if frame in (60, 64, 68):
+                set_display(dispmod.next_mode(dset.display))
+            if frame == 72:
+                set_display("Windowed")
             if os.environ.get("DC_SHOT") and frame in (35, 50, 80, 89):
                 pygame.image.save(screen, "/tmp/band%d.png" % frame)
         if selftest_frames and frame >= selftest_frames:
@@ -1347,6 +1374,14 @@ def selftest():
     from spherov2.toy.bb9e import BB9E as _B9; from spherov2.toy.r2d2 import R2D2 as _R2; from spherov2.commands.core import Core as _C, IntervalOptions as _IO
     check(hasattr(_B9, "enter_deep_sleep") and hasattr(_R2, "enter_deep_sleep") and _IO.DEEP_SLEEP == 0xffff and hasattr(_C, "sleep"), "deep sleep API present")
     check(kbm.Keybinds(path + "keys2").keys("deep_sleep") == [], "deep sleep unbound by default")
+    import display as dm
+    s_, off, sz = dm.fit((2360, 1440)); check(abs(s_ - 2) < 1e-6 and off == (0, 0), "scale 2x")
+    s_, off, sz = dm.fit((1920, 1080)); check(off[1] == 0 and off[0] > 0 and dm.to_canvas((off[0], 0), (1920, 1080)) == (0, 0), "letterbox + mouse mapping")
+    check(dm.to_canvas((1180, 720), (1180, 720)) == (1180, 720) and dm.next_mode("Fullscreen") == "Windowed", "identity mapping + mode cycle")
+    st_ = dm.Settings(path + "set"); st_.display = "Full window"; st_.window_size = [1400, 900]; st_.save()
+    st2 = dm.Settings(path + "set"); check(st2.display == "Full window" and st2.window_size == [1400, 900], "display setting saved + restored")
+    open(path + "set", "w").write("{bad"); check(dm.Settings(path + "set").display == "Windowed", "bad settings file falls back")
+    check(kbm.Keybinds(path + "keys3").action_for_key("f11") == "fullscreen", "F11 bound to fullscreen")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
