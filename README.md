@@ -49,7 +49,9 @@ When a new version comes out, a green banner pops up at the top. Click **Update 
 ## Droid settings
 The **Set** button on each droid in the list has these options:
 - **Human interactions:** greetings and reactions to being driven fast, patted or bumped.
-- **On-board idle animations:** the droid's own built-in idle moves. This works on BB-9E, R2-D2 and R2-Q5, but not on BB-8. The setting is sent to the droid every time it connects.
+- **On-board idle animations:** always on (BB-9E, R2-D2, R2-Q5 — switched on every connect; BB-8 has none).
+- **Human interactions:** reacts when picked up, put down, nudged or spun.
+- **Droid interactions:** connected droids sporadically chat, notice newcomers, and react when another droid is bumped or picked up.
 - **All interactions OFF/ON:** switches all of them off or back on at once.
 
 ## Memory

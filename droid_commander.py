@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 ONBOARD_IDLE_MODELS = ("BB9E", "R2D2", "R2Q5")  # spherov2 Animatronic.enable_idle_animations (CID 44)
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
@@ -40,6 +40,7 @@ class Personality:
         self.drive_seconds = 0.0
         self.last_seen = None
         self.human_on = True   # idle emotes, greetings, reactions to you
+        self.droid_on = True   # react to other connected droids (like the original app's Droid Interactions)
         self.onboard_idle = True  # droid's own built-in idle animations (BB-9E/R2-D2/R2-Q5 only)
         self.load()
 
@@ -47,14 +48,14 @@ class Personality:
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
-            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "onboard_idle"):
+            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on", "onboard_idle"):
                 if k in d:
                     setattr(self, k, d[k])
         except Exception:
             pass
 
     def save(self):
-        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "onboard_idle")}
+        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on", "onboard_idle")}
         d["last_seen"] = time.time()
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -123,7 +124,10 @@ def emote_table(model):
 REACT = {"bump": ["Scared", "Surprised", "Angry", "No"], "fast": ["Excited", "Happy", "Laugh"],
          "idle_happy": ["Happy", "Curious", "Yes", "Laugh"], "idle_sad": ["Sad", "No", "Scared", "Content"],
          "idle": ["Curious", "Scan", "Content", "Happy"], "greet": ["Excited", "Happy", "Greetings", "Yoohoo"],
-         "missed": ["Sad", "Excited"], "pet": ["Happy", "Laugh", "Yes", "Content"], "poke": ["Angry", "No", "Surprised"]}
+         "missed": ["Sad", "Excited"], "pet": ["Happy", "Laugh", "Yes", "Content"], "poke": ["Angry", "No", "Surprised"],
+         # human-interaction triggers (touch / motion, like the original app's Human Interactions mode)
+         "pickup": ["Scared", "Surprised", "Alarm", "Nervous"], "putdown": ["Yes", "Happy", "Content", "Laugh"],
+         "nudge": ["Curious", "Surprised", "No", "Angry"], "spin": ["Excited", "Laugh", "Shake", "Short circuit"]}
 
 
 def pick(model, kind):
@@ -185,6 +189,10 @@ class MockDroid:
     def simulate_bump(self):
         if self.on_collision:
             self.on_collision()
+
+    def simulate(self, kind):
+        if getattr(self, "on_sensor", None):
+            self.on_sensor(kind)
 
 
 class RealDroid:
@@ -291,15 +299,18 @@ class RealDroid:
             from spherov2.types import Color
             log("[%s] connecting: model=%s address=%s (wake + start-up state via SpheroEduAPI)" % (self.name, self.model, getattr(self.toy, "address", "?")))
             with SpheroEduAPI(self.toy) as api:
-                log("[%s] connected + woken" % self.name)
+                log("[%s] connected + woken (toy class %s.%s)" % (self.name, type(self.toy).__module__, type(self.toy).__name__))
+                self._wake_up()
                 self._read_info()
                 self.api, self.Color = api, Color
                 try:
                     api.register_event(EventType.on_collision, lambda *_: self.on_collision and self.on_collision())
+                    for ev_, k_ in ((EventType.on_freefall, "pickup"), (EventType.on_landing, "putdown"), (EventType.on_gyro_max, "spin")):
+                        api.register_event(ev_, (lambda *_, k_=k_: getattr(self, "on_sensor", None) and self.on_sensor(k_)))
                 except Exception as e:
                     log("collision events unavailable: %r" % e)
                 if self.model in ("R2D2", "R2Q5"):
-                    self._safe(lambda: api.set_stance(__import__("spherov2.types", fromlist=["Stance"]).Stance.Tripod))
+                    pass
                 self._safe(lambda: api.set_main_led(Color(0, 120, 255)))
                 self.connected = True
                 self._ready.set()
@@ -312,7 +323,7 @@ class RealDroid:
                         pass
                     if self._drive != self._sent:
                         h, s = self._drive
-                        self._safe(lambda: (api.set_heading(h), api.set_speed(s)), "drive")
+                        self._safe(lambda: self._send_drive(h, s), "drive %d@%d" % (s, h))
                         self._sent = (h, s)
                     if int(time.time() * 2) % 2 == 0:
                         try:
@@ -342,6 +353,36 @@ class RealDroid:
             self.errors += 1
             self.last_error = "%s: %s" % (what, (str(e) or type(e).__name__)[:80])
             log("[%s] %s FAILED after %.2fs: %s" % (self.name, what, time.time() - t0, traceback.format_exc()))
+
+    def _wake_up(self):
+        """Wake fully: wake again after a pause, stabilization on, tripod for R2s (spherov2 toy methods)."""
+        t = self.toy
+        self._safe(lambda: t.wake(), "wake")
+        time.sleep(0.6)
+        if hasattr(t, "set_stabilization"):
+            try:
+                from spherov2.commands.drive import StabilizationIndexes
+                idx = getattr(StabilizationIndexes, "FULL_CONTROL_SYSTEM", None) or list(StabilizationIndexes)[-1]
+                self._safe(lambda: t.set_stabilization(idx), "stabilization %s" % getattr(idx, "name", idx))
+            except Exception as e:
+                log("[%s] stabilization enum: %r" % (self.name, e))
+        if hasattr(t, "perform_leg_action"):
+            from spherov2.commands.animatronic import R2LegActions
+            self._safe(lambda: t.perform_leg_action(R2LegActions.THREE_LEGS), "tripod")
+            time.sleep(1.0)
+
+    def _send_drive(self, h, s):
+        t = self.toy
+        if hasattr(t, "drive_with_heading"):  # BB-9E / R2-D2 / R2-Q5: direct drive packet
+            from spherov2.commands.drive import DriveFlags
+            flag = DriveFlags.BACKWARD if s < 0 else DriveFlags.FORWARD
+            hh = (h + 180) % 360 if s < 0 else h
+            t.drive_with_heading(min(255, abs(int(s))), int(hh) % 360, flag)
+        else:  # BB-8 (Ollie-based)
+            self.api.set_heading(h); self.api.set_speed(s)
+
+    def diagnose(self):
+        self._q.put(("diag", None))
 
     def _read_info(self):
         t = self.toy
@@ -394,13 +435,33 @@ class RealDroid:
         api, Color = self.api, self.Color
         kind, arg = cmd
         log("[%s] command: %s %s" % (self.name, kind, arg))
+        if kind == "diag":
+            t = self.toy
+            log("[%s] ==== MOTOR TEST start (class %s, battery %s) ====" % (self.name, type(t).__name__, getattr(self, "battery_label", "?")))
+            self._read_battery()
+            self._safe(lambda: t.wake(), "diag wake"); time.sleep(0.5)
+            if hasattr(t, "set_head_position"):
+                for ang in (90, -90, 0):
+                    self._safe(lambda a=ang: t.set_head_position(float(a)), "diag dome %d" % ang); time.sleep(1.0)
+            if hasattr(t, "perform_leg_action"):
+                from spherov2.commands.animatronic import R2LegActions
+                self._safe(lambda: t.perform_leg_action(R2LegActions.TWO_LEGS), "diag bipod"); time.sleep(2)
+                self._safe(lambda: t.perform_leg_action(R2LegActions.THREE_LEGS), "diag tripod"); time.sleep(2)
+            self._safe(lambda: self._send_drive(0, 80), "diag drive fwd"); time.sleep(0.8)
+            self._safe(lambda: self._send_drive(0, 0), "diag stop")
+            anim = getattr(getattr(t, "Animations", None), "EMOTE_YES", None) or getattr(getattr(t, "Animations", None), "EMOTE_AFFIRMATIVE", None)
+            if anim is not None:
+                self._safe(lambda: t.play_animation(anim), "diag animation")
+            log("[%s] ==== MOTOR TEST end - tell us what physically moved ====" % self.name)
+            self._sent = None
+            return
         if kind == "aim":
             if arg == "start":
                 self._safe(lambda: api.stop_roll(), "aim stop"); self._safe(lambda: api.set_back_led(255), "aim light on")
             elif arg == "done":
                 self._safe(lambda: api.reset_aim(), "aim reset"); self._safe(lambda: api.set_back_led(0), "aim light off")
             else:
-                self._safe(lambda: (api.set_heading(int(arg)), api.set_speed(0)), "aim rotate")
+                self._safe(lambda: self._send_drive(int(arg), 0), "aim rotate")
             self._drive = self._sent = (0, 0)
             return
         if kind == "volume":
@@ -442,10 +503,12 @@ class RealDroid:
                     self._safe(lambda: self.toy.play_animation(anim), "emote %s" % name)
                     self._sent = None
         elif kind == "dome":
-            self._safe(lambda: api.set_dome_position(arg), "dome")
+            if hasattr(self.toy, "set_head_position"):
+                self._safe(lambda: self.toy.set_head_position(float(max(-160, min(180, arg)))), "dome %s" % arg)
         elif kind == "stance":
-            from spherov2.types import Stance
-            self._safe(lambda: api.set_stance(Stance.Bipod if arg == "bipod" else Stance.Tripod), "stance")
+            if hasattr(self.toy, "perform_leg_action"):
+                from spherov2.commands.animatronic import R2LegActions
+                self._safe(lambda: self.toy.perform_leg_action(R2LegActions.TWO_LEGS if arg == "bipod" else R2LegActions.THREE_LEGS), "stance %s" % arg)
         elif kind == "led":
             self._safe(lambda: api.set_main_led(Color(*arg)), "led")
 
@@ -505,9 +568,12 @@ class Brain:
         self.last_react = 0
         self.bump_flag = False
         droid.on_collision = self._bump
+        droid.on_sensor = self._sensor
+        self.sensor_q = []
         self.dome = 0
         self.stance = "tripod"
         self.joined = time.time()
+        self.signals = []  # things other droids can react to
         import modes
         self.mode = "Drive"
         self.auto = None  # active autopilot (Patrol/Path/Playback)
@@ -522,6 +588,12 @@ class Brain:
         self.bump_flag = True  # handled on main thread
         self.patrol_bump = True
 
+    def _sensor(self, kind):
+        self.sensor_q.append(kind)  # handled on main thread
+
+    def user_expression(self, label):
+        self.emote(label); self.say("Expression: " + label); self.signals.append("expr")
+
     def react(self, label, xp=0):
         """Automatic personality reaction - only when Human interactions are on."""
         if self.p.human_on:
@@ -529,14 +601,14 @@ class Brain:
 
     def greet(self):
         if self.d.model in ONBOARD_IDLE_MODELS and hasattr(self.d, "set_onboard_idle"):
-            self.d.set_onboard_idle(self.p.onboard_idle)
+            self.d.set_onboard_idle(True)  # always on, like the original app
         kind = self.p.start_session()
         if kind == "first":
-            self.say("%s says hello for the first time!" % self.d.name); self.react(pick(self.d.model, "greet"), xp=0)
+            self.say("%s connected for the first time." % self.d.name)
         elif kind == "missed":
-            self.say("%s missed you! It's been a while." % self.d.name); self.react(pick(self.d.model, "missed"), xp=0)
+            self.say("%s connected." % self.d.name)
         else:
-            self.say("%s is happy you're back!" % self.d.name); self.react(pick(self.d.model, "greet"), xp=0)
+            self.say("%s connected." % self.d.name)
         self.p.save()
 
     def emote(self, label, xp=1):
@@ -628,8 +700,7 @@ class Brain:
         if frac > 0.75:
             self.fast_since = self.fast_since or now
             if now - self.fast_since > 3 and now - self.last_react > 12:
-                self.say("Wheee! %s loves going fast!" % self.d.name)
-                self.p.add_xp(3); self.p.nudge(5); self.react(pick(self.d.model, "fast"))
+                pass
                 self.fast_since = now
         else:
             self.fast_since = None
@@ -637,8 +708,15 @@ class Brain:
             self.bump_flag = False
             self.p.bumps += 1; self.p.nudge(-4)
             if now - self.last_react > 2:
-                self.say("Ouch! %s bumped into something." % self.d.name)
-                self.react(pick(self.d.model, "bump"))
+                if speed == 0 and self.p.human_on:
+                    self.say("%s felt a nudge." % self.d.name); self.react(pick(self.d.model, "nudge"))
+                self.signals.append("bump")
+        while self.sensor_q:
+            k_ = self.sensor_q.pop(0)
+            if self.p.human_on and now - self.last_react > 1.5:
+                self.say({"pickup": "%s was picked up!", "putdown": "%s was put down.", "spin": "%s is being spun around!"}.get(k_, "%s " + k_) % self.d.name)
+                self.react(pick(self.d.model, k_))
+            self.signals.append(k_)
         if speed == 0 and now > self.next_idle and (not self.p.human_on or self.d.model in ONBOARD_IDLE_MODELS):
             # droids with on-board idle animations do their own idle behaviour (like the official app)
             self.next_idle = now + 30
@@ -650,6 +728,55 @@ class Brain:
             if self.d.model in ("R2D2", "R2Q5") and random.random() < 0.5:
                 self.turn_dome(random.choice([-90, -45, 45, 90]) - self.dome)
             self.next_idle = now + random.uniform(20, 45)
+
+
+# ---------------------------------------------------------------- droid interactions (original-app style)
+class DroidInteractions:
+    """When 2+ droids are connected and both have Droid interactions on: they greet newcomers, react to each
+    other's bumps, fast driving and expressions, and now and then 'talk' when idle. No scores - just reactions."""
+    def __init__(self):
+        self.known, self.queue, self.next_talk = set(), [], time.time() + 25
+
+    def _later(self, delay, brain, kind, text):
+        self.queue.append((time.time() + delay, brain, kind, text))
+
+    def update(self, brains):
+        now = time.time()
+        active = [b for b in brains if b.p.droid_on]
+        ids = {id(b) for b in active}
+        due = [q for q in self.queue if q[0] <= now and id(q[1]) in ids]
+        self.queue = [q for q in self.queue if q[0] > now and id(q[1]) in ids]
+        for _, b, kind, txt in due:
+            b.emote(pick(b.d.model, kind), xp=0)
+            if txt:
+                b.say(txt)
+        for b in active:
+            if id(b) not in self.known:
+                self.known.add(id(b))
+                for o in active:
+                    if o is not b:
+                        self._later(2.5, o, "greet", "%s notices %s." % (o.d.name, b.d.name))
+        self.known &= ids | {id(b) for b in brains if not b.p.droid_on}
+        for b in brains:
+            sigs, b.signals = b.signals, []
+            if not b.p.droid_on:
+                continue
+            others = [o for o in active if o is not b]
+            if not others:
+                continue
+            for sig in sigs:
+                o = random.choice(others)
+                if sig == "bump":
+                    self._later(1.2, o, "bump", "%s reacts to %s's crash." % (o.d.name, b.d.name))
+                elif sig == "pickup":
+                    self._later(1.5, o, "pickup", "%s is worried about %s." % (o.d.name, b.d.name))
+        idle = [b for b in active if getattr(b.d, "speed_now", 0) == 0 and now - b.last_input > 10]
+        if len(idle) >= 2 and now > self.next_talk and not self.queue:  # sporadic exchanges, like the OG app
+            a, c = random.sample(idle, 2)
+            self._later(0, a, "idle", "%s and %s are talking." % (a.d.name, c.d.name))
+            self._later(2.5, c, "idle_happy", None)
+            self._later(5, a, "idle_happy", None)
+            self.next_talk = now + random.uniform(30, 60)
 
 
 # ---------------------------------------------------------------- GUI
@@ -686,6 +813,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
     FB = pygame.font.SysFont("segoeui,arial,dejavusans", 26, bold=True)
     FS = pygame.font.SysFont("segoeui,arial,dejavusans", 14)
     BG, PANEL, ACC, TXT, DIM = (18, 22, 34), (30, 36, 54), (0, 170, 255), (235, 240, 250), (140, 150, 170)
+    interactions = DroidInteractions()
     kb = kbmod.Keybinds(os.path.join(data_dir(), "keybinds.json"))
     upd = updmod.Updater(VERSION)
     upd_msg = None if selftest_frames else updmod.read_last_result(VERSION)
@@ -1004,7 +1132,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     tbl = emote_table(b.d.model)
                     if act == "next_droid": state["active"] += 1
                     elif act.startswith("emote") and int(act[5:]) - 1 < len(tbl):
-                        lab = tbl[int(act[5:]) - 1][0]; b.emote(lab); b.say("Emote: " + lab)
+                        lab = tbl[int(act[5:]) - 1][0]; b.user_expression(lab)
                     elif act == "random_emote": lab = random.choice(tbl)[0]; b.emote(lab); b.say("Emote: " + lab)
                     elif act == "pat": b.pet()
                     elif act == "poke": b.poke()
@@ -1029,7 +1157,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     continue
                 tbl = emote_table(pb.d.model)
                 if act.startswith("emote") and int(act[5:]) - 1 < len(tbl):
-                    lab = tbl[int(act[5:]) - 1][0]; pb.emote(lab); pb.say("Emote: " + lab)
+                    lab = tbl[int(act[5:]) - 1][0]; pb.user_expression(lab)
                 elif act == "random_emote": lab = random.choice(tbl)[0]; pb.emote(lab); pb.say("Emote: " + lab)
                 elif act == "pat": pb.pet()
                 elif act == "poke": pb.poke()
@@ -1111,6 +1239,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             if not isinstance(x.d, MockDroid) and not x.d.connected:
                 x.p.save(); brains().remove(x); state["busy_addrs"].discard(getattr(x, "key", None))
                 state["status"] = "Lost connection to %s." % x.d.name
+        interactions.update(brains())
         # ---- Force Band
         bd = bs_["band"]
         gests = []
@@ -1211,6 +1340,9 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             p = b.p
             text("%s  -  %s" % (b.d.name, PRETTY.get(b.d.model, b.d.model)), (346, 106), FB)
             text("Firmware %s   Battery %s" % (getattr(b.d, "firmware", None) or "?", getattr(b.d, "battery_label", None) or (("%d%%" % b.d.get_battery()) if b.d.get_battery() is not None else "checking...")), (346, 142), F, DIM)
+            bl_ = getattr(b.d, "battery_label", "") or ""
+            if "Low" in bl_ or "Critical" in bl_:
+                text("Battery low - the droid may ignore motor commands. Charge it.", (346, 230), FS, (255, 170, 60))
             if getattr(b.d, "errors", 0):
                 text("%d command error(s): %s  - see Debug log" % (b.d.errors, b.d.last_error[:50]), (346, 164), FS, (255, 120, 120))
             button((734, 108, 100, 30), "Disconnect", lambda b=b: disconnect(b), col=(255, 100, 100), f=FS)
@@ -1219,7 +1351,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             sp = getattr(b.d, "speed_now", 0)
             bar(346, 200, 230, (batt or 0) / 100, (0, 170, 255), "Battery")
             bar(596, 200, 230, abs(sp) / 255, (255, 120, 60), "Speed  (max %d)%s" % (state["max"], "  REVERSE" if sp < 0 else ""))
-            text("Distance travelled: %.1f m" % getattr(b.d, "distance", 0), (346, 230), FS, DIM)
+            text("Distance travelled: %.1f m" % getattr(b.d, "distance", 0), (596, 230), FS, DIM)
             cx, cy = 760, 350
             hd = drive.get(id(b), [0])[0]
             pygame.draw.circle(screen, (50, 56, 76), (cx, cy), 40, 3)
@@ -1241,7 +1373,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 text("Expressions", (528, 306), FS, DIM)
                 for i, (lab, _) in enumerate(emote_table(b.d.model)[:9]):
                     bx, by = 528 + (i % 2) * 76, 326 + (i // 2) * 32
-                    button((bx, by, 72, 28), lab[:9], (lambda l=lab, b=b: (b.emote(l), b.say("Expression: " + l))), col=(255, 190, 70), f=FS)
+                    button((bx, by, 72, 28), lab[:9], (lambda l=lab, b=b: b.user_expression(l)), col=(255, 190, 70), f=FS)
                 if b.d.model in ("R2D2", "R2Q5"):
                     sl = DOME_SLIDER
                     pygame.draw.rect(screen, (50, 56, 76), sl, border_radius=6)
@@ -1300,6 +1432,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 text("AIM: turn with Left/Right or drag the pad sideways,", (346, 600), FS, (0, 220, 255))
                 text("until the back light faces you. Then press Done.", (346, 618), FS, (0, 220, 255))
             if isinstance(b.d, MockDroid):
+                button((690, 610, 68, 26), "Pick up", lambda: b.d.simulate("pickup"), col=(200, 200, 200), f=FS)
+                button((762, 610, 68, 26), "Spin", lambda: b.d.simulate("spin"), col=(200, 200, 200), f=FS)
                 button((690, 572, 140, 32), "Fake bump", b.d.simulate_bump, col=(200, 200, 200))
             evs = sorted([e for x in brains() for e in x.events])[-4:]
             yy = 694 - 18 * len(evs)
@@ -1359,7 +1493,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             else:
                 buttons.clear()
                 ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
-                r_ = pygame.Rect(340, 190, 500, 290)
+                r_ = pygame.Rect(340, 190, 500, 350)
                 pygame.draw.rect(screen, PANEL, r_, border_radius=14); pygame.draw.rect(screen, ACC, r_, 2, border_radius=14)
                 text("%s settings" % sf.d.name, (360, 216), FB)
                 def tog(attr, sf=sf):
@@ -1368,31 +1502,28 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 def tog_idle(sf=sf):
                     sf.p.onboard_idle = not sf.p.onboard_idle; sf.p.save(); sf.d.set_onboard_idle(sf.p.onboard_idle)
                 def all_off(sf=sf):
-                    v = not (sf.p.human_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS))
-                    sf.p.human_on = v; sf.p.save()
-                    if sf.d.model in ONBOARD_IDLE_MODELS:
-                        sf.p.onboard_idle = v; sf.p.save(); sf.d.set_onboard_idle(v)
-                rows = [("Human interactions", "Greetings + reactions to driving, pats, bumps", "human_on")]
+                    v = not (sf.p.human_on or sf.p.droid_on)
+                    sf.p.human_on = sf.p.droid_on = v; sf.p.save()
+                rows = [("Human interactions", "Reacts to being picked up, put down, nudged, spun", "human_on"),
+                        ("Droid interactions", "Reacts to your other connected droids", "droid_on")]
                 for i, (lab, sub, attr) in enumerate(rows):
-                    yy = 262 + i * 64
+                    yy = 276 + i * 56
                     text(lab, (360, yy), F); text(sub, (360, yy + 24), FS, DIM)
                     on = getattr(sf.p, attr)
                     button((730, yy + 4, 90, 34), "ON" if on else "OFF", (lambda a=attr: tog(a)), col=(0, 200, 120) if on else (120, 120, 130))
-                yy = 326
-                if sf.d.model in ONBOARD_IDLE_MODELS:
-                    text("On-board idle animations", (360, yy), F); text("The droid's own built-in idle moves", (360, yy + 24), FS, DIM)
-                    button((730, yy + 4, 90, 34), "ON" if sf.p.onboard_idle else "OFF", tog_idle, col=(0, 200, 120) if sf.p.onboard_idle else (120, 120, 130))
-                else:
-                    text("On-board idle animations: not supported on %s" % PRETTY.get(sf.d.model, sf.d.model), (360, yy + 8), FS, DIM)
-                anyon = sf.p.human_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS)
-                button((360, 400, 210, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
-                text("Saved in this droid's memory; re-sent on every connect.", (360, 446), FS, DIM)
-                text("Firmware: %s    Battery: %s" % (getattr(sf.d, "firmware", None) or "?", ("%d%%" % sf.d.get_battery()) if sf.d.get_battery() is not None else "?"), (360, 236), FS, DIM)
+                yy = 388
+                text(("On-board idle animations: always on" if sf.d.model in ONBOARD_IDLE_MODELS else "On-board idle animations: not on %s" % PRETTY.get(sf.d.model, sf.d.model)), (360, yy + 8), FS, DIM)
+                anyon = sf.p.human_on or sf.p.droid_on
+                button((360, 456, 210, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
+                text("Saved in this droid's memory; re-sent on every connect.", (360, 506), FS, DIM)
+                if hasattr(sf.d, "diagnose"):
+                    button((670, 242, 150, 28), "Motor test (log)", sf.d.diagnose, col=(255, 190, 70), f=FS)
+                text("Firmware: %s    Battery: %s" % (getattr(sf.d, "firmware", None) or "?", ("%d%%" % sf.d.get_battery()) if sf.d.get_battery() is not None else "?"), (360, 248), FS, DIM)
                 if getattr(sf.d, "volume", None) is not None and sf.d.model in ("R2D2", "R2Q5"):
-                    text("Volume %d%%" % (sf.d.volume * 100 // 255), (590, 410), FS)
-                    button((680, 402, 30, 30), "-", lambda sf=sf: sf.d.set_volume(max(0, sf.d.volume - 32)), col=(160, 160, 255), f=FS)
-                    button((714, 402, 30, 30), "+", lambda sf=sf: sf.d.set_volume(min(255, sf.d.volume + 32)), col=(160, 160, 255), f=FS)
-                button((760, 400, 70, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
+                    text("Volume %d%%" % (sf.d.volume * 100 // 255), (590, 466), FS)
+                    button((680, 458, 30, 30), "-", lambda sf=sf: sf.d.set_volume(max(0, sf.d.volume - 32)), col=(160, 160, 255), f=FS)
+                    button((714, 458, 30, 30), "+", lambda sf=sf: sf.d.set_volume(min(255, sf.d.volume + 32)), col=(160, 160, 255), f=FS)
+                button((760, 456, 70, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
         cs = state.get("confirm_sleep")
         if cs:
             if cs not in brains():
@@ -1490,7 +1621,7 @@ def selftest():
         d = MockDroid(m, "x"); b = Brain(d, Personality("t" + m, path + m)); b.greet()
         b.update(0.1, 90, 255, True); check(d.speed == 255 and d.heading == 90, "drive %s" % m)
         d.simulate_bump(); b.last_react = 0; b.update(0.1, 0, 0, False)
-        check(b.p.bumps == 1 and len(d.calls) >= 2, "bump reaction %s" % m)
+        check(b.p.bumps == 1 and any(c[0] == "emote" for c in d.calls), "nudge reaction %s" % m)
         b.next_idle = 0; n = len(d.calls); b.update(0.1, 0, 0, False)
         check((len(d.calls) > n) == (m not in ONBOARD_IDLE_MODELS), "idle: app-side for BB-8, on-board for %s" % m)
     # modes
@@ -1603,7 +1734,7 @@ def selftest():
     check(not any(c[0] == "emote" for c in d.calls), "human interactions off: no automatic emotes")
     b.emote("Happy"); check(("emote", "Happy") in d.calls, "manual emotes still work")
     pi = path + "idle"; d = MockDroid("R2D2", "idl"); b = Brain(d, Personality("idl", pi)); b.p.onboard_idle = False; b.greet()
-    check(("idle_anim", False) in d.calls and Personality("idl", pi).onboard_idle is False, "on-board idle setting saved + re-applied on connect")
+    check(("idle_anim", True) in d.calls, "on-board idle always switched ON at connect")
     d8 = MockDroid("BB8", "b8"); Brain(d8, Personality("b8", path + "b8")).greet(); check(not any(c[0] == "idle_anim" for c in d8.calls), "BB-8: no on-board idle command")
     from spherov2.toy.bb9e import BB9E as _b9; from spherov2.toy.r2q5 import R2Q5 as _q5; from spherov2.toy.bb8 import BB8 as _b8
     check(hasattr(_b9, "enable_idle_animations") and hasattr(_q5, "enable_idle_animations") and not hasattr(_b8, "enable_idle_animations"), "idle animation API per model")
@@ -1621,6 +1752,21 @@ def selftest():
     class _St: name = "CHARGING"
     g.update(4.1, state=_St()); check(g.state == "Charging" and "Charging" in g.label(), "charging state shown")
     g2 = bm.BatteryGauge(); g2.update(3.7, percent=64); check(g2.percent == 64 and g2.source == "droid", "droid-reported % preferred")
+    di = DroidInteractions(); ya = Brain(MockDroid("R2D2", "ia"), Personality("ia", path + "ia")); yb = Brain(MockDroid("BB8", "ib"), Personality("ib", path + "ib"))
+    di.update([ya, yb]); check(len(di.queue) >= 2, "droids greet each other on connect")
+    di.queue = []; ya.signals.append("bump"); di.update([ya, yb]); check(any(q[1] is yb for q in di.queue), "other droid reacts to bump")
+    di.queue = []; yb.p.droid_on = False; ya.signals.append("bump"); di.update([ya, yb]); check(not di.queue, "droid interactions off: no reaction")
+    class _T:
+        calls = []
+        def drive_with_heading(self, *a): self.calls.append(("drive", a))
+        def set_head_position(self, a): self.calls.append(("dome", a))
+        def perform_leg_action(self, a): self.calls.append(("leg", int(a)))
+    rd2 = RealDroid.__new__(RealDroid); rd2.toy = _T(); rd2.model = "R2D2"; rd2.name = "t"; rd2.errors = 0; rd2.last_error = ""; rd2.api = rd2.Color = rd2._sent = None
+    rd2._send_drive(90, 120); rd2._send_drive(90, -100); rd2._do(("dome", 45)); rd2._do(("stance", "bipod"))
+    check(_T.calls == [("drive", (120, 90, 0)), ("drive", (100, 270, 1)), ("dome", 45.0), ("leg", 2)], "real R2 commands use toy methods (drive_with_heading/head/legs)")
+    d = MockDroid("R2D2", "hu"); b = Brain(d, Personality("hu", path + "hu")); d.calls.clear()
+    d.simulate("pickup"); b.update(0.1, 0, 0, False); check(any(c[0] == "emote" for c in d.calls) and "pickup" in b.signals, "human interaction: reacts to pick-up")
+    b.p.human_on = False; d.calls.clear(); b.last_react = 0; d.simulate("spin"); b.update(0.1, 0, 0, False); check(not any(c[0] == "emote" for c in d.calls), "human interactions off: no reaction")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
