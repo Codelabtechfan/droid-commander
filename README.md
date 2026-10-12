@@ -37,6 +37,9 @@ Click **Force Band** at the bottom left.
 - **Reflex** (do the gesture that's shown before time runs out) and **Duel** (block the training bot's attacks, then push to strike) are training games. They use simple made-up sounds.
 - Holocrons you collected in the old official app were stored in your Sphero account, not on the band, so they can't be brought into this app.
 
+## Problems?
+Click **Debug log** in the right panel to see what the app is doing. **Open folder** opens `%APPDATA%\DroidCommander`; send `log.txt` from there if something isn't working.
+
 ## Updates
 If an update ever fails, the app tells you next time it starts. The new version is then saved next to the old one as `DroidCommander-new.exe`, so you can run that instead.
 

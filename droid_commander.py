@@ -3,7 +3,7 @@ Unofficial fan tool. Not affiliated with Sphero, Disney or Lucasfilm. Uses no mo
 import json, math, os, queue, random, sys, threading, time, traceback
 
 APP = "Droid Commander"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 SUPPORTED = ("BB8", "BB9E", "R2D2", "R2Q5")
 PRETTY = {"BB8": "BB-8", "BB9E": "BB-9E", "R2D2": "R2-D2", "R2Q5": "R2-Q5"}
 
@@ -17,7 +17,10 @@ def data_dir():
 
 def log(msg):
     try:
-        with open(os.path.join(data_dir(), "log.txt"), "a", encoding="utf-8") as f:
+        lp = os.path.join(data_dir(), "log.txt")
+        if os.path.exists(lp) and os.path.getsize(lp) > 2_000_000:
+            os.replace(lp, lp + ".old")
+        with open(lp, "a", encoding="utf-8") as f:
             f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
     except Exception:
         pass
@@ -180,6 +183,8 @@ class RealDroid:
         self.error = None
         self.battery = None
         self.on_collision = None
+        self.errors = 0
+        self.last_error = ""
         self._q = queue.Queue()
         self._drive = (0, 0)
         self._sent = None
@@ -226,7 +231,9 @@ class RealDroid:
         try:
             from spherov2.sphero_edu import SpheroEduAPI, EventType
             from spherov2.types import Color
+            log("[%s] connecting: model=%s address=%s (wake + start-up state via SpheroEduAPI)" % (self.name, self.model, getattr(self.toy, "address", "?")))
             with SpheroEduAPI(self.toy) as api:
+                log("[%s] connected + woken" % self.name)
                 self.api, self.Color = api, Color
                 try:
                     api.register_event(EventType.on_collision, lambda *_: self.on_collision and self.on_collision())
@@ -246,7 +253,7 @@ class RealDroid:
                         pass
                     if self._drive != self._sent:
                         h, s = self._drive
-                        self._safe(lambda: (api.set_heading(h), api.set_speed(s)))
+                        self._safe(lambda: (api.set_heading(h), api.set_speed(s)), "drive")
                         self._sent = (h, s)
                     if time.time() - last_batt > 20:
                         last_batt = time.time()
@@ -259,11 +266,18 @@ class RealDroid:
             self.connected = False
             self._ready.set()
 
-    def _safe(self, fn):
+    def _safe(self, fn, what="cmd"):
+        t0 = time.time()
         try:
-            return fn()
+            r = fn()
+            dt = time.time() - t0
+            if what != "drive" or dt > 1:
+                log("[%s] %s ok (%.2fs)" % (self.name, what, dt))
+            return r
         except Exception as e:
-            log("cmd failed: %r" % e)
+            self.errors += 1
+            self.last_error = "%s: %s" % (what, (str(e) or type(e).__name__)[:80])
+            log("[%s] %s FAILED after %.2fs: %s" % (self.name, what, time.time() - t0, traceback.format_exc()))
 
     def _read_battery(self):
         for attr in ("get_battery_percentage", "get_battery_voltage"):
@@ -281,6 +295,7 @@ class RealDroid:
     def _do(self, cmd):
         api, Color = self.api, self.Color
         kind, arg = cmd
+        log("[%s] command: %s %s" % (self.name, kind, arg))
         if kind == "deep_sleep":
             self._safe(lambda: api.stop_roll())
             ok = False
@@ -307,15 +322,15 @@ class RealDroid:
             else:
                 anim = getattr(getattr(self.toy, "Animations", None), name, None)
                 if anim is not None:
-                    self._safe(lambda: api.play_animation(anim))
+                    self._safe(lambda: self.toy.play_animation(anim), "emote %s" % name)
                     self._sent = None
         elif kind == "dome":
-            self._safe(lambda: api.set_dome_position(arg))
+            self._safe(lambda: api.set_dome_position(arg), "dome")
         elif kind == "stance":
             from spherov2.types import Stance
-            self._safe(lambda: api.set_stance(Stance.Bipod if arg == "bipod" else Stance.Tripod))
+            self._safe(lambda: api.set_stance(Stance.Bipod if arg == "bipod" else Stance.Tripod), "stance")
         elif kind == "led":
-            self._safe(lambda: api.set_main_led(Color(*arg)))
+            self._safe(lambda: api.set_main_led(Color(*arg)), "led")
 
     def _bb8_emote(self, n):
         api, C = self.api, self.Color
@@ -859,6 +874,25 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     bar(516, y0 + 120, 160, gm.bot_hp / 6, (255, 90, 90), "Training bot")
             button((346, 600, 140, 32), "Restart", lambda: set_tab(tab), col=(0, 200, 140), f=FS)
 
+    def draw_log():
+        text("Debug log", (346, 104), FB, ACC)
+        lp = os.path.join(data_dir(), "log.txt")
+        text("File: " + lp, (346, 138), FS, DIM)
+        def open_folder():
+            try:
+                os.startfile(data_dir())
+            except Exception as e:
+                state["status"] = "Open the folder yourself: %s" % data_dir()
+        button((690, 104, 140, 30), "Open folder", open_folder, col=(0, 200, 140), f=FS)
+        if frame % 30 == 0 or "loglines" not in state:
+            try:
+                with open(lp, encoding="utf-8", errors="replace") as f:
+                    state["loglines"] = f.read().splitlines()[-26:]
+            except Exception:
+                state["loglines"] = ["(no log yet)"]
+        for i, ln in enumerate(state["loglines"]):
+            text(ln[:78], (346, 162 + i * 20), FS, (255, 120, 120) if "FAIL" in ln or "error" in ln.lower() else TXT)
+
     def draw_keys():
         text("Keybinds", (346, 104), FB, ACC)
         rb = state.get("rebind")
@@ -1073,7 +1107,9 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         # middle: active droid
         text(state["status"], (330, 74), FS, TXT)
         pygame.draw.rect(screen, PANEL, (330, 96, 520, 608), border_radius=12)
-        if state.get("page") == "keys":
+        if state.get("page") == "log":
+            draw_log()
+        elif state.get("page") == "keys":
             draw_keys()
         elif state.get("page") == "band":
             draw_band()
@@ -1081,6 +1117,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             p = b.p
             text("%s  -  %s" % (b.d.name, PRETTY.get(b.d.model, b.d.model)), (346, 106), FB)
             text("Level %d   XP %d   Mood: %s" % (p.level, p.xp, p.mood_name), (346, 142), F, DIM)
+            if getattr(b.d, "errors", 0):
+                text("%d command error(s): %s  - see Debug log" % (b.d.errors, b.d.last_error[:50]), (346, 164), FS, (255, 120, 120))
             button((734, 108, 100, 30), "Disconnect", lambda b=b: disconnect(b), col=(255, 100, 100), f=FS)
             button((624, 108, 104, 30), "Deep Sleep", lambda b=b: ask_sleep(b), col=(150, 120, 255), f=FS)
             bar(346, 190, 230, (p.mood + 100) / 200, (255, 200, 0), "Mood")
@@ -1173,6 +1211,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text(s, (880, 118 + i * 21), FS, ACC if s.startswith(("KEYBOARD", "CONTROLLERS")) else TXT)
         st = upd.status
         lbl = {"checking": "Checking...", "uptodate": "Up to date (v%s)" % VERSION, "offline": "Offline - try again"}.get(st, "Check for updates")
+        button((880, 548, 268, 30), "< Back" if state.get("page") == "log" else "Debug log", lambda: state.__setitem__("page", "droid" if state.get("page") == "log" else "log"), col=(200, 200, 120), f=FS)
         button((880, 586, 268, 30), "Display: %s  (F11)" % dset.display, lambda: set_display(dispmod.next_mode(dset.display)), col=(160, 160, 255), f=FS)
         button((880, 624, 268, 30), "< Back" if state.get("page") == "keys" else "Keybinds", lambda: state.__setitem__("page", "droid" if state.get("page") == "keys" else "keys"), col=(0, 200, 255), f=FS)
         button((880, 662, 268, 30), lbl, upd.check, col=(120, 130, 170), enabled=st not in ("checking", "downloading"), f=FS)
@@ -1245,6 +1284,8 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     set_tab(tb)
             if 20 < frame < 85 and frame % 5 == 0 and bs_["band"]:
                 bs_["band"].events.append(random.choice(bandmod.GESTURES))
+            if frame == 80:
+                state["page"] = "log"
             if frame == 86:
                 state["page"] = "keys"
             if frame in (60, 64, 68):
@@ -1382,6 +1423,14 @@ def selftest():
     st2 = dm.Settings(path + "set"); check(st2.display == "Full window" and st2.window_size == [1400, 900], "display setting saved + restored")
     open(path + "set", "w").write("{bad"); check(dm.Settings(path + "set").display == "Windowed", "bad settings file falls back")
     check(kbm.Keybinds(path + "keys3").action_for_key("f11") == "fullscreen", "F11 bound to fullscreen")
+    class FakeToy:
+        Animations = __import__("spherov2.toy.r2d2", fromlist=["R2D2"]).R2D2.Animations
+        name = "fake"; got = []
+        def play_animation(self, *a): self.got.append(a)
+    rd = RealDroid.__new__(RealDroid); rd.toy = FakeToy(); rd.model = "R2D2"; rd.name = "fake"; rd.errors = 0; rd.last_error = ""
+    rd.api, rd.Color, rd._sent = None, None, None
+    rd._do(("emote", "Happy")); check(len(FakeToy.got) == 1 and len(FakeToy.got[0]) == 1, "emote sends animation without bogus wait/proc arg")
+    rd._safe(lambda: 1 / 0, "boom"); check(rd.errors == 1 and "boom" in rd.last_error, "command errors are counted + surfaced")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
@@ -1406,6 +1455,7 @@ def main():
             with open(os.path.join(os.getcwd(), "selftest_result.txt"), "w") as f:
                 f.write(("OK" if code == 0 else "FAILED") + " " + VERSION)
         sys.exit(code)
+    log("==== Droid Commander %s start (python %s, %s) ====" % (VERSION, sys.version.split()[0], sys.platform))
     try:
         run_gui(demo="--demo" in sys.argv)
     except Exception:
