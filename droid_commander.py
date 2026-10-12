@@ -38,20 +38,22 @@ class Personality:
         self.bumps = self.pets = self.sessions = self.emotes = 0
         self.drive_seconds = 0.0
         self.last_seen = None
+        self.human_on = True   # idle emotes, greetings, reactions to you
+        self.droid_on = True   # greeting/chatting/reacting with other droids
         self.load()
 
     def load(self):
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
-            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen"):
+            for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on"):
                 if k in d:
                     setattr(self, k, d[k])
         except Exception:
             pass
 
     def save(self):
-        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen")}
+        d = {k: getattr(self, k) for k in ("mood", "energy", "xp", "bumps", "pets", "sessions", "emotes", "drive_seconds", "last_seen", "human_on", "droid_on")}
         d["last_seen"] = time.time()
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -440,14 +442,19 @@ class Brain:
         self.bump_flag = True  # handled on main thread
         self.patrol_bump = True
 
+    def react(self, label, xp=0):
+        """Automatic personality reaction - only when Human interactions are on."""
+        if self.p.human_on:
+            self.emote(label, xp=xp)
+
     def greet(self):
         kind = self.p.start_session()
         if kind == "first":
-            self.say("%s says hello for the first time!" % self.d.name); self.emote(pick(self.d.model, "greet"), xp=0)
+            self.say("%s says hello for the first time!" % self.d.name); self.react(pick(self.d.model, "greet"), xp=0)
         elif kind == "missed":
-            self.say("%s missed you! It's been a while." % self.d.name); self.emote(pick(self.d.model, "missed"), xp=0)
+            self.say("%s missed you! It's been a while." % self.d.name); self.react(pick(self.d.model, "missed"), xp=0)
         else:
-            self.say("%s is happy you're back (mood: %s)" % (self.d.name, self.p.mood_name)); self.emote(pick(self.d.model, "greet"), xp=0)
+            self.say("%s is happy you're back (mood: %s)" % (self.d.name, self.p.mood_name)); self.react(pick(self.d.model, "greet"), xp=0)
         self.p.save()
 
     def emote(self, label, xp=1):
@@ -461,11 +468,11 @@ class Brain:
 
     def pet(self):
         self.p.pets += 1; self.p.nudge(8); self.p.add_xp(2)
-        self.say("You gave %s a pat. It loves that!" % self.d.name); self.emote(pick(self.d.model, "pet"), xp=0)
+        self.say("You gave %s a pat. It loves that!" % self.d.name); self.react(pick(self.d.model, "pet"), xp=0)
 
     def poke(self):
         self.p.nudge(-6)
-        self.say("Hey! %s didn't like that poke." % self.d.name); self.emote(pick(self.d.model, "poke"), xp=0)
+        self.say("Hey! %s didn't like that poke." % self.d.name); self.react(pick(self.d.model, "poke"), xp=0)
 
     def goodnight(self):
         """Goodnight emote, save memory, then deep sleep (droid needs its charger to wake)."""
@@ -540,7 +547,7 @@ class Brain:
             self.fast_since = self.fast_since or now
             if now - self.fast_since > 3 and now - self.last_react > 12:
                 self.say("Wheee! %s loves going fast!" % self.d.name); self.signals.append("fast")
-                self.p.add_xp(3); self.p.nudge(5); self.emote(pick(self.d.model, "fast"), xp=0)
+                self.p.add_xp(3); self.p.nudge(5); self.react(pick(self.d.model, "fast"))
                 self.fast_since = now
         else:
             self.fast_since = None
@@ -549,8 +556,10 @@ class Brain:
             self.p.bumps += 1; self.p.nudge(-4)
             if now - self.last_react > 2:
                 self.say("Ouch! %s bumped into something." % self.d.name); self.signals.append("bump")
-                self.emote(pick(self.d.model, "bump"), xp=0)
-        if speed == 0 and now > self.next_idle and not getattr(self, 'social_busy', False):
+                self.react(pick(self.d.model, "bump"))
+        if speed == 0 and now > self.next_idle and not getattr(self, 'social_busy', False) and not self.p.human_on:
+            self.next_idle = now + 30
+        elif speed == 0 and now > self.next_idle and not getattr(self, 'social_busy', False):
             kind = "idle_happy" if self.p.mood > 40 else "idle_sad" if self.p.mood < -20 else "idle"
             lab = pick(self.d.model, kind)
             self.say("%s is bored... (%s)" % (self.d.name, lab.lower()) if kind != "idle_happy" else "%s is feeling chatty (%s)" % (self.d.name, lab.lower()))
@@ -598,6 +607,7 @@ class Society:
 
     def update(self, brains):
         now = time.time()
+        brains = [b for b in brains if b.p.droid_on]  # droids with Droid interactions off are invisible here
         ids = {id(b) for b in brains}
         self.script = [x for x in self.script if id(x[1]) in ids]
         due = [x for x in self.script if x[0] <= now]
@@ -1141,6 +1151,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             pygame.draw.rect(screen, (45, 70, 110) if sel else (40, 46, 66), r, border_radius=10)
             if sel:
                 pygame.draw.rect(screen, ACC, r, 2, border_radius=10)
+            button((r.right - 40, y + 6, 32, 26), "⚙" if False else "Set", (lambda x=x: state.__setitem__("settings_for", x)), col=(160, 160, 255), f=FS)
             buttons.append((r, (lambda i=i: state.__setitem__("active", i))))
             pads = [str(n + 1) for n, iid in enumerate(sorted(joys)) if pad_target(iid) is x]
             text("F%d  %s" % (i + 1, x.d.name), (42, y + 4), F)
@@ -1295,6 +1306,33 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 line += w_ + " "
             text(line, (344, ly), FS)
             button((776, 18, 64, 36), "OK", lambda: state.__setitem__("upd_msg", None), col=(180, 180, 180), f=FS)
+        sf = state.get("settings_for")
+        if sf:
+            if sf not in brains():
+                state["settings_for"] = None
+            else:
+                buttons.clear()
+                ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
+                r_ = pygame.Rect(340, 200, 500, 300)
+                pygame.draw.rect(screen, PANEL, r_, border_radius=14); pygame.draw.rect(screen, ACC, r_, 2, border_radius=14)
+                text("%s settings" % sf.d.name, (360, 216), FB)
+                def tog(attr, sf=sf):
+                    setattr(sf.p, attr, not getattr(sf.p, attr)); sf.p.save()
+                    log("[%s] %s = %s" % (sf.d.name, attr, getattr(sf.p, attr)))
+                def all_off(sf=sf):
+                    v = not (sf.p.human_on or sf.p.droid_on)
+                    sf.p.human_on = sf.p.droid_on = v; sf.p.save()
+                rows = [("Human interactions", "Idle emotes, greetings, reactions to you", "human_on"),
+                        ("Droid interactions", "Greeting, chatting, reacting to other droids", "droid_on")]
+                for i, (lab, sub, attr) in enumerate(rows):
+                    yy = 262 + i * 64
+                    text(lab, (360, yy), F); text(sub, (360, yy + 24), FS, DIM)
+                    on = getattr(sf.p, attr)
+                    button((730, yy + 4, 90, 34), "ON" if on else "OFF", (lambda a=attr: tog(a)), col=(0, 200, 120) if on else (120, 120, 130))
+                anyon = sf.p.human_on or sf.p.droid_on
+                button((360, 400, 220, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
+                text("Saved in this droid's memory.", (360, 446), FS, DIM)
+                button((720, 446, 100, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
         cs = state.get("confirm_sleep")
         if cs:
             if cs not in brains():
@@ -1333,7 +1371,10 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     set_tab(tb)
             if 20 < frame < 85 and frame % 5 == 0 and bs_["band"]:
                 bs_["band"].events.append(random.choice(bandmod.GESTURES))
+            if frame == 78 and brains():
+                state["settings_for"] = brains()[0]
             if frame == 80:
+                state["settings_for"] = None
                 state["page"] = "log"
             if frame == 86:
                 state["page"] = "keys"
@@ -1351,7 +1392,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 set_display("Fullscreen")
                 pygame.display.set_mode = _orig
                 state["fallback_ok"] = dset.display == "Windowed" and not (window.get_flags() & pygame.FULLSCREEN)
-            if os.environ.get("DC_SHOT") and frame in (35, 50, 80, 89):
+            if os.environ.get("DC_SHOT") and frame in (35, 50, 79, 80, 89):
                 pygame.image.save(screen, "/tmp/band%d.png" % frame)
         if selftest_frames and frame >= selftest_frames:
             running = False
@@ -1506,6 +1547,17 @@ def selftest():
     check(ok and fd.tries == 3 and any("Retrying" in m and "3/3" in m for m in msgs), "connect retries with status")
     fd2 = FlakyDroid(); fd2.tries = -99; time.sleep = lambda x: None; ok2 = fd2.connect(timeout=1, attempts=3); time.sleep = _sl
     check(not ok2 and fd2.tries == -96, "connect gives up after 3 attempts")
+    pp = path + "toggles"; pq = Personality("tg", pp); pq.human_on = False; pq.save()
+    check(Personality("tg", pp).human_on is False and Personality("tg", pp).droid_on is True, "interaction toggles persist")
+    d = MockDroid("R2D2", "quiet"); b = Brain(d, Personality("tg", pp)); b.greet(); b.next_idle = 0; b.update(0.1, 0, 0, False)
+    d.simulate_bump(); b.last_react = 0; b.update(0.1, 0, 0, False); b.pet()
+    check(not any(c[0] == "emote" for c in d.calls), "human interactions off: no automatic emotes")
+    b.emote("Happy"); check(("emote", "Happy") in d.calls, "manual emotes still work")
+    soc = Society(path + "fr2"); x1 = Brain(MockDroid("BB8", "a1"), Personality("a1", path + "a1")); x2 = Brain(MockDroid("BB9E", "a2"), Personality("a2", path + "a2"))
+    x2.p.droid_on = False; soc.update([x1, x2]); x1.signals.append("bump"); soc.update([x1, x2])
+    for x in (x1, x2): x.last_input = 0; x.d.speed_now = 0
+    soc.next_chat = 0; soc.update([x1, x2])
+    check(not soc.script and not soc.friendship(x1, x2), "droid interactions off: no greeting/reaction/chat")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
