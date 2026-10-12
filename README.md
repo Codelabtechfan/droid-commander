@@ -22,11 +22,10 @@ The **Display** button in the right panel switches between Windowed (you can res
 ## Deep Sleep
 The **Deep Sleep** button (next to Disconnect) makes the droid say goodnight, saves its memory and switches it fully off. To wake it up again, put it on its charger. You can give it a key in Keybinds; it has none by default.
 
-## Modes (pick one per droid with the buttons under its stats)
-- **Drive**: free roam with keyboard or controller.
-- **Patrol**: the droid wanders around by itself, backs away and turns when it bumps into something, and plays emotes now and then. "Patrol ALL" sends every droid out at once. Pressing any drive key or moving the stick stops it.
-- **Path**: draw a line on the canvas and press **Go!**. The droid follows it, with "up" on the screen being the way the droid is facing. Distances are rough guesses based on time.
-- **Record**: press Record, drive and play emotes, then press Stop. **Play** replays it and **Save** keeps it, so you can load it again later.
+## Modes (same as the original droid app, minus the movie and AR modes)
+- **Drive**: drag the drive pad with the mouse, or use the keyboard or a controller. Hold **Boost** to go faster and **Reverse** to back up. There are 9 expression buttons, and R2-D2 and R2-Q5 also get a dome slider and a stance button. **Aim** turns the droid on the spot with its back light on; turn it until the light faces you, then press Done.
+- **Patrol**: the droid roams around by itself, turns away when it hits something, and shows how far it has travelled. "Patrol ALL" sends every droid out.
+- **Draw & Drive**: draw a path and the droid follows it.
 
 ## Force Band
 Click **Force Band** at the bottom left.
@@ -53,5 +52,5 @@ The **Set** button on each droid in the list has these options:
 - **On-board idle animations:** the droid's own built-in idle moves. This works on BB-9E, R2-D2 and R2-Q5, but not on BB-8. The setting is sent to the droid every time it connects.
 - **All interactions OFF/ON:** switches all of them off or back on at once.
 
-## Personality
-Each droid remembers its mood, energy, XP, level, bumps and pats. All of this is saved in `%APPDATA%\DroidCommander`. If something breaks, look in `%APPDATA%\DroidCommander\log.txt`.
+## Memory
+Each droid's settings are saved in `%APPDATA%\DroidCommander`.

@@ -7,7 +7,7 @@ DEFAULTS = {  # action: [label, key, key2, pad_button]
     "boost": ["Boost", "left shift", "right shift", None], "speed_down": ["Speed -", "q", None, None],
     "speed_up": ["Speed +", "e", None, None], "stop": ["Stop", "space", None, None],
     "next_droid": ["Switch droid", "tab", None, None], "disconnect": ["Disconnect", "escape", None, None],
-    "pat": ["Pat", "p", None, 4], "poke": ["Poke", "o", None, None], "stance": ["Stance (R2)", "x", None, 5],
+    "reverse": ["Reverse (hold)", "r", None, 4], "aim": ["Aim / calibrate", "h", None, None], "stance": ["Stance (R2)", "x", None, 5],
     "dome_left": ["Dome left (R2)", "z", None, None], "dome_right": ["Dome right (R2)", "c", None, None],
     "random_emote": ["Random emote", None, None, 7], "deep_sleep": ["Deep Sleep", None, None, None], "fullscreen": ["Toggle fullscreen", "f11", None, None], "pad_switch": ["Pad: change droid", None, None, 6],
 }

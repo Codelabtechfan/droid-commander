@@ -115,10 +115,7 @@ class RealBand(DemoBand):
                         self.pointing = o.get("yaw", 0) % 360
                     if now - last_b > 30:
                         last_b = now
-                        try:
-                            v = toy.get_battery_voltage(); self.battery = max(0, min(100, int((v - 3.5) / 0.7 * 100)))
-                        except Exception:
-                            pass
+                        self.battery = read_band_battery(toy, self)
                     time.sleep(0.03)
         except Exception as e:
             self.error = str(e) or type(e).__name__
@@ -129,6 +126,25 @@ class RealBand(DemoBand):
                 pass
         finally:
             self.connected = False; self._ready.set()
+
+
+def read_band_battery(toy, band):
+    """Band battery: its own % command if it answers, else Li-ion voltage curve with smoothing."""
+    import battery as batmod
+    if not hasattr(band, "_gauge"):
+        band._gauge, band._pct_ok = batmod.BatteryGauge(), None
+    pct = volt = None
+    if band._pct_ok is not False:
+        try:
+            from spherov2.commands.power import Power
+            pct = Power.get_battery_percentage(toy); band._pct_ok = True
+        except Exception:
+            band._pct_ok = False
+    try:
+        volt = toy.get_battery_voltage()
+    except Exception:
+        pass
+    return band._gauge.update(volt, pct)
 
 
 def scan_bands(timeout=6.0):

@@ -2,7 +2,8 @@
 Drive (free roam) input is in drive_from_keyboard / drive_from_pad so it can be changed on its own."""
 import json, math, os, random, time
 
-MODES = ["Drive", "Patrol", "Path", "Record"]
+MODES = ["Drive", "Patrol", "Path"]  # as in the original app (Drive, Patrol, Draw & Drive)
+MODE_LABELS = {"Drive": "Drive", "Patrol": "Patrol", "Path": "Draw & Drive"}
 
 
 # ------------------------------------------------------------ Drive (free roam)

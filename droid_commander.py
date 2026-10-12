@@ -143,6 +143,7 @@ class MockDroid:
         self.calls = []
         self.on_collision = None
         self.dome = 0; self.stance = "tripod"
+        self.firmware = "demo 1.0"; self.volume = 128; self.distance = 0.0
 
     def connect(self):
         self.connected = True; return True
@@ -151,7 +152,8 @@ class MockDroid:
         self.connected = False
 
     def drive(self, heading, speed):
-        self.heading, self.speed = int(heading) % 360, int(max(0, min(255, speed)))
+        self.heading, self.speed = int(heading) % 360, int(max(-255, min(255, speed)))
+        self.distance = getattr(self, "distance", 0.0) + abs(self.speed) * 0.0005
 
     def emote(self, label):
         self.calls.append(("emote", label))
@@ -164,6 +166,12 @@ class MockDroid:
 
     def lights(self, rgb):
         self.calls.append(("led", rgb))
+
+    def aim(self, arg):
+        self.calls.append(("aim", arg))
+
+    def set_volume(self, v):
+        self.volume = v; self.calls.append(("volume", v))
 
     def set_onboard_idle(self, on):
         self.calls.append(("idle_anim", bool(on)))
@@ -191,6 +199,7 @@ class RealDroid:
         self.on_collision = None
         self.errors = 0
         self.last_error = ""
+        self.firmware = None; self.volume = None; self.distance = 0.0
         self._q = queue.Queue()
         self._drive = (0, 0)
         self._sent = None
@@ -244,7 +253,7 @@ class RealDroid:
             self._t.join(6)
 
     def drive(self, heading, speed):
-        self._drive = (int(heading) % 360, int(max(0, min(255, speed))))
+        self._drive = (int(heading) % 360, int(max(-255, min(255, speed))))
 
     def emote(self, label):
         self._q.put(("emote", label))
@@ -257,6 +266,12 @@ class RealDroid:
 
     def lights(self, rgb):
         self._q.put(("led", rgb))
+
+    def aim(self, arg):
+        self._q.put(("aim", arg))
+
+    def set_volume(self, v):
+        self.volume = v; self._q.put(("volume", v))
 
     def set_onboard_idle(self, on):
         self._q.put(("idle_anim", bool(on)))
@@ -277,6 +292,7 @@ class RealDroid:
             log("[%s] connecting: model=%s address=%s (wake + start-up state via SpheroEduAPI)" % (self.name, self.model, getattr(self.toy, "address", "?")))
             with SpheroEduAPI(self.toy) as api:
                 log("[%s] connected + woken" % self.name)
+                self._read_info()
                 self.api, self.Color = api, Color
                 try:
                     api.register_event(EventType.on_collision, lambda *_: self.on_collision and self.on_collision())
@@ -298,7 +314,12 @@ class RealDroid:
                         h, s = self._drive
                         self._safe(lambda: (api.set_heading(h), api.set_speed(s)), "drive")
                         self._sent = (h, s)
-                    if time.time() - last_batt > 20:
+                    if int(time.time() * 2) % 2 == 0:
+                        try:
+                            self.distance = (api.get_distance() or 0) / 100.0  # cm -> m
+                        except Exception:
+                            pass
+                    if time.time() - last_batt > 15:
                         last_batt = time.time()
                         self._read_battery()
                 self._safe(lambda: api.stop_roll())
@@ -322,23 +343,70 @@ class RealDroid:
             self.last_error = "%s: %s" % (what, (str(e) or type(e).__name__)[:80])
             log("[%s] %s FAILED after %.2fs: %s" % (self.name, what, time.time() - t0, traceback.format_exc()))
 
+    def _read_info(self):
+        t = self.toy
+        try:
+            if hasattr(t, "get_main_app_version"):
+                v = t.get_main_app_version(); self.firmware = ".".join(str(x) for x in (v if isinstance(v, (tuple, list)) else [v]))
+            elif hasattr(t, "get_versions"):
+                v = t.get_versions(); self.firmware = str(getattr(v, "main_app_version", v))
+        except Exception as e:
+            log("[%s] firmware read failed: %r" % (self.name, e))
+        if hasattr(t, "get_audio_volume"):
+            try:
+                self.volume = int(t.get_audio_volume())
+            except Exception as e:
+                log("[%s] volume read failed: %r" % (self.name, e))
+        log("[%s] firmware=%s volume=%s" % (self.name, self.firmware, self.volume))
+        self._read_battery()
+
     def _read_battery(self):
-        for attr in ("get_battery_percentage", "get_battery_voltage"):
-            f = getattr(self.toy, attr, None)
-            if f:
-                try:
-                    v = f()
-                    if attr == "get_battery_voltage":
-                        v = max(0, min(100, int((v - 3.5) / 0.7 * 100)))
-                    self.battery = int(v)
-                    return
-                except Exception:
-                    continue
+        """Battery: droid's own % if the firmware answers it, else voltage through a Li-ion curve. Logged."""
+        import battery as batmod
+        t = self.toy
+        if not hasattr(self, "gauge"):
+            self.gauge = batmod.BatteryGauge(); self._pct_ok = None
+        pct = volt = state = None
+        if self._pct_ok is not False:  # spherov2 doesn't map this for droids; try the raw Power command once
+            try:
+                from spherov2.commands.power import Power
+                pct = Power.get_battery_percentage(t); self._pct_ok = True
+            except Exception:
+                self._pct_ok = False
+        try:
+            if hasattr(t, "get_battery_voltage"):
+                volt = t.get_battery_voltage()
+            elif hasattr(t, "get_power_state"):
+                ps = t.get_power_state(); volt, state = ps.voltage, ps.state
+        except Exception as e:
+            log("[%s] battery voltage read failed: %r" % (self.name, e))
+        if state is None and hasattr(t, "get_battery_state"):
+            try:
+                state = t.get_battery_state()
+            except Exception:
+                pass
+        load = abs(self._sent[1]) / 255 if self._sent else 0
+        self.battery = self.gauge.update(volt, pct, state, load)
+        self.battery_label = self.gauge.label()
+        log("[%s] battery: pct=%s volt=%s state=%s -> %s" % (self.name, pct, volt, state, self.battery_label))
 
     def _do(self, cmd):
         api, Color = self.api, self.Color
         kind, arg = cmd
         log("[%s] command: %s %s" % (self.name, kind, arg))
+        if kind == "aim":
+            if arg == "start":
+                self._safe(lambda: api.stop_roll(), "aim stop"); self._safe(lambda: api.set_back_led(255), "aim light on")
+            elif arg == "done":
+                self._safe(lambda: api.reset_aim(), "aim reset"); self._safe(lambda: api.set_back_led(0), "aim light off")
+            else:
+                self._safe(lambda: (api.set_heading(int(arg)), api.set_speed(0)), "aim rotate")
+            self._drive = self._sent = (0, 0)
+            return
+        if kind == "volume":
+            if hasattr(self.toy, "set_audio_volume"):
+                self._safe(lambda: self.toy.set_audio_volume(int(arg)), "volume")
+            return
         if kind == "idle_anim":
             if hasattr(self.toy, "enable_idle_animations"):
                 self._safe(lambda: self.toy.enable_idle_animations(arg), "on-board idle animations %s" % ("on" if arg else "off"))
@@ -468,7 +536,7 @@ class Brain:
         elif kind == "missed":
             self.say("%s missed you! It's been a while." % self.d.name); self.react(pick(self.d.model, "missed"), xp=0)
         else:
-            self.say("%s is happy you're back (mood: %s)" % (self.d.name, self.p.mood_name)); self.react(pick(self.d.model, "greet"), xp=0)
+            self.say("%s is happy you're back!" % self.d.name); self.react(pick(self.d.model, "greet"), xp=0)
         self.p.save()
 
     def emote(self, label, xp=1):
@@ -543,7 +611,7 @@ class Brain:
                     self.next_idle = time.time() + 20
         if self.recorder.recording:
             self.recorder.tick(heading, speed)
-        self.update(dt, heading, int(max(0, min(255, speed))), had_input)
+        self.update(dt, heading, int(max(-255, min(255, speed))), had_input)
 
     def update(self, dt, heading, speed, had_input, max_speed=255):
         now = time.time()
@@ -554,7 +622,7 @@ class Brain:
             self.stance = "tripod"; self.d.set_stance("tripod")
         self.d.drive(heading, speed)
         self.d.speed_now = speed
-        frac = speed / 255.0
+        frac = abs(speed) / 255.0
         self.p.tick(dt, frac)
         self.p.add_xp(0)
         if frac > 0.75:
@@ -738,10 +806,10 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text(label, (x, y - 20), FS, DIM)
 
     help_lines = ["KEYBOARD (drives selected droid)", "Tab / F1-F4: pick droid", "W/S or Up/Down: forward / back",
-                  "A/D or Left/Right: turn", "Shift: boost   Q/E: speed - / +", "1-9, 0: emotes   P: pat   O: poke",
+                  "A/D or Left/Right: turn", "Shift: boost   R: reverse   Q/E: speed -/+", "1-9: expressions   H: aim",
                   "Z/C: dome (R2)   X: stance (R2)", "Space: stop   Esc: disconnect", "",
                   "CONTROLLERS (one per droid)", "Pad 1 -> droid 1, pad 2 -> droid 2...", "Back/View: switch pad's droid",
-                  "Left stick: drive   Right stick X: dome", "RT: boost   LT: slow", "A/B/X/Y: emotes   LB: pat",
+                  "Left stick: drive   Right stick X: dome", "RT: boost   LT: slow   LB: reverse", "A/B/X/Y: expressions",
                   "RB: stance   Start: random emote"]
 
     def pad_target(iid):
@@ -842,6 +910,20 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     bar(516, y0 + 120, 160, gm.bot_hp / 6, (255, 90, 90), "Training bot")
             button((346, 600, 140, 32), "Restart", lambda: set_tab(tab), col=(0, 200, 140), f=FS)
 
+    PAD_C, PAD_R = (430, 420), 78
+    DOME_SLIDER = pygame.Rect(528, 492, 148, 14)
+    HOLD_BOOST = pygame.Rect(690, 458, 140, 32)
+    HOLD_REV = pygame.Rect(690, 496, 140, 32)
+
+    def aim_toggle(b):
+        if state.get("aim") is b:
+            b.d.aim("done"); state["aim"] = None; state["heading"][id(b)] = 0
+            b.say("Aim set. Forward is now the way the droid is facing away from you.")
+        else:
+            if b.auto: b.set_mode("Drive")
+            state["aim"], state["aim_h"], state["aim_sent"] = b, 0, 0
+            b.d.aim("start"); b.say("Aiming: back light on.")
+
     def draw_log():
         text("Debug log", (346, 104), FB, ACC)
         lp = os.path.join(data_dir(), "log.txt")
@@ -933,6 +1015,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                     elif act == "speed_up": state["max"] = min(255, state["max"] + 20)
                     elif act == "disconnect": disconnect(b)
                     elif act == "deep_sleep": ask_sleep(b)
+                    elif act == "aim": aim_toggle(b)
                 if b and ev.key in (pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4):
                     i = [pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4].index(ev.key)
                     if i < len(brains()):
@@ -977,8 +1060,51 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 pass
         if b and now < bs_["drive_until"] and not drive[id(b)][2]:
             drive[id(b)] = [(state["heading"].get(id(b), 0) + bs_["drive_off"]) % 360, state["max"], False]
+        # on-screen drive pad / hold buttons / dome slider (mouse)
+        mdown = pygame.mouse.get_pressed()[0]
+        mp = mpos()
+        on_drive = b and state.get("page", "droid") == "droid" and b.mode == "Drive" and not state.get("settings_for") and not state.get("confirm_sleep")
+        state["hold_boost"] = bool(on_drive and mdown and HOLD_BOOST.collidepoint(mp)) or (b is not None and kb.pressed("boost", pygame.key.get_pressed(), pygame.key.key_code))
+        state["hold_reverse"] = bool(on_drive and mdown and HOLD_REV.collidepoint(mp)) or (b is not None and kb.pressed("reverse", pygame.key.get_pressed(), pygame.key.key_code))
+        if on_drive and mdown and (state.get("pad_drag") or math.hypot(mp[0] - PAD_C[0], mp[1] - PAD_C[1]) < PAD_R):
+            state["pad_drag"] = True
+            vx, vy = (mp[0] - PAD_C[0]) / PAD_R, (mp[1] - PAD_C[1]) / PAD_R
+            mag = math.hypot(vx, vy)
+            if mag > 1:
+                vx, vy, mag = vx / mag, vy / mag, 1
+            state["pad_vec"] = (vx, vy)
+            if mag > 0.12 and state.get("aim") is not b:
+                drive[id(b)] = [(state["heading"].get(id(b), 0) + math.degrees(math.atan2(vx, -vy))) % 360,
+                                mag * state["max"] * (1.5 if state["hold_boost"] else 1), True]
+        else:
+            state["pad_drag"] = False; state["pad_vec"] = (0, 0)
+        if on_drive and mdown and b.d.model in ("R2D2", "R2Q5") and DOME_SLIDER.inflate(0, 20).collidepoint(mp) and frame % 4 == 0:
+            tgt = int(-160 + (mp[0] - DOME_SLIDER.x) / DOME_SLIDER.w * 340)
+            b.turn_dome(tgt - b.dome)
+        for iid, j in list(joys.items()):
+            pb = pad_target(iid); rb_ = kb.b["reverse"]["pad"]
+            if pb and rb_ is not None and rb_ < j.get_numbuttons() and j.get_button(rb_) and drive[id(pb)][1] > 0:
+                drive[id(pb)][1] = -drive[id(pb)][1]
+        if b and state["hold_reverse"] and drive[id(b)][1] > 0:
+            drive[id(b)][1] = -drive[id(b)][1]
+        # aiming: rotate in place, no driving
+        ab = state.get("aim")
+        if ab is not None:
+            if ab not in brains():
+                state["aim"] = None
+            else:
+                k_ = pygame.key.get_pressed()
+                turn = kb.pressed("right", k_, pygame.key.key_code) - kb.pressed("left", k_, pygame.key.key_code)
+                if ab is b and state.get("pad_drag"):
+                    turn = state["pad_vec"][0]
+                state["aim_h"] = (state["aim_h"] + turn * 90 * dt) % 360
+                if abs(state["aim_h"] - state["aim_sent"]) >= 3 and frame % 6 == 0:
+                    ab.d.aim(int(state["aim_h"])); state["aim_sent"] = state["aim_h"]
+                drive[id(ab)] = [state["aim_h"], 0, False]
         for x in list(brains()):
             h, sp, had = drive[id(x)]
+            if state.get("aim") is x:
+                x.update(dt, h, 0, False); continue
             x.control(dt, h, sp, had)
             if frame % 600 == 0:
                 x.p.save()
@@ -1063,10 +1189,10 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             buttons.append((r, (lambda i=i: state.__setitem__("active", i))))
             pads = [str(n + 1) for n, iid in enumerate(sorted(joys)) if pad_target(iid) is x]
             text("F%d  %s" % (i + 1, x.d.name), (42, y + 4), F)
-            text("%s  Lv%d  %s%s" % (PRETTY.get(x.d.model, x.d.model), x.p.level, x.p.mood_name, ("  pad " + ",".join(pads)) if pads else ""), (42, y + 28), FS, DIM)
+            text("%s%s" % (PRETTY.get(x.d.model, x.d.model), ("  pad " + ",".join(pads)) if pads else ""), (42, y + 28), FS, DIM)
             bt = x.d.get_battery()
-            bar(42, y + 56, 120, (bt or 0) / 100, (0, 170, 255), None, 10)
-            bar(172, y + 56, 120, (x.p.mood + 100) / 200, (255, 200, 0), None, 10)
+            bar(42, y + 56, 200, (bt or 0) / 100, (0, 170, 255), None, 10)
+            text("%s" % ("%d%%" % bt if bt is not None else "?"), (250, y + 50), FS, DIM)
             y += 90
         bl = "Force Band" + ("  [on]" if bs_["band"] else "")
         button((32, 640, 270, 32), ("< Back to droids" if state.get("page") == "band" else bl), lambda: state.__setitem__("page", "droid" if state.get("page") == "band" else "band"), col=(255, 160, 60), f=FS)
@@ -1084,18 +1210,16 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         elif b:
             p = b.p
             text("%s  -  %s" % (b.d.name, PRETTY.get(b.d.model, b.d.model)), (346, 106), FB)
-            text("Level %d   XP %d   Mood: %s" % (p.level, p.xp, p.mood_name), (346, 142), F, DIM)
+            text("Firmware %s   Battery %s" % (getattr(b.d, "firmware", None) or "?", getattr(b.d, "battery_label", None) or (("%d%%" % b.d.get_battery()) if b.d.get_battery() is not None else "checking...")), (346, 142), F, DIM)
             if getattr(b.d, "errors", 0):
                 text("%d command error(s): %s  - see Debug log" % (b.d.errors, b.d.last_error[:50]), (346, 164), FS, (255, 120, 120))
             button((734, 108, 100, 30), "Disconnect", lambda b=b: disconnect(b), col=(255, 100, 100), f=FS)
             button((624, 108, 104, 30), "Deep Sleep", lambda b=b: ask_sleep(b), col=(150, 120, 255), f=FS)
-            bar(346, 190, 230, (p.mood + 100) / 200, (255, 200, 0), "Mood")
-            bar(596, 190, 230, p.energy / 100, (0, 220, 120), "Energy")
             batt = b.d.get_battery()
             sp = getattr(b.d, "speed_now", 0)
-            bar(346, 240, 230, (batt or 0) / 100, (0, 170, 255), "Battery: %s" % ("%d%%" % batt if batt is not None else "checking..."))
-            bar(596, 240, 230, sp / 255, (255, 120, 60), "Speed  (max %d)" % state["max"])
-            text("Bumps %d  Pats %d  Visits %d  Drive %dm" % (p.bumps, p.pets, p.sessions, p.drive_seconds // 60), (346, 266), FS, DIM)
+            bar(346, 200, 230, (batt or 0) / 100, (0, 170, 255), "Battery")
+            bar(596, 200, 230, abs(sp) / 255, (255, 120, 60), "Speed  (max %d)%s" % (state["max"], "  REVERSE" if sp < 0 else ""))
+            text("Distance travelled: %.1f m" % getattr(b.d, "distance", 0), (346, 230), FS, DIM)
             cx, cy = 760, 350
             hd = drive.get(id(b), [0])[0]
             pygame.draw.circle(screen, (50, 56, 76), (cx, cy), 40, 3)
@@ -1104,14 +1228,26 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
             text("Heading %d" % hd, (cx - 40, cy + 44), FS, DIM)
             for i, m in enumerate(modes.MODES):
                 sel = b.mode == m
-                button((346 + i * 84, 304, 78, 28), ("> " if sel else "") + m, (lambda m=m, b=b: b.set_mode(m)),
+                button((346 + i * 110, 266, 104, 28), ("> " if sel else "") + modes.MODE_LABELS.get(m, m), (lambda m=m, b=b: b.set_mode(m)),
                        col=(0, 220, 255) if sel else (90, 110, 150), f=FS)
             if b.mode == "Drive":
-                text("Emotes", (346, 338), FS, DIM)
-                for i, (lab, _) in enumerate(emote_table(b.d.model)):
-                    bx, by = 346 + (i % 2) * 140, 358 + (i // 2) * 31
-                    key = str((i + 1) % 10) if i < 10 else ""
-                    button((bx, by, 130, 28), ("%s %s" % (key, lab)).strip(), (lambda l=lab, b=b: (b.emote(l), b.say("Emote: " + l))), col=(255, 190, 70), f=FS)
+                # driving pad (drag with the mouse), like the original app's drive pad
+                pc = PAD_C
+                pygame.draw.circle(screen, (40, 46, 66), pc, PAD_R)
+                pygame.draw.circle(screen, (70, 80, 110), pc, PAD_R, 2)
+                kx, ky = state.get("pad_vec", (0, 0))
+                pygame.draw.circle(screen, ACC, (int(pc[0] + kx * PAD_R), int(pc[1] + ky * PAD_R)), 22)
+                text("Drive pad", (pc[0] - 30, pc[1] + PAD_R + 4), FS, DIM)
+                text("Expressions", (528, 306), FS, DIM)
+                for i, (lab, _) in enumerate(emote_table(b.d.model)[:9]):
+                    bx, by = 528 + (i % 2) * 76, 326 + (i // 2) * 32
+                    button((bx, by, 72, 28), lab[:9], (lambda l=lab, b=b: (b.emote(l), b.say("Expression: " + l))), col=(255, 190, 70), f=FS)
+                if b.d.model in ("R2D2", "R2Q5"):
+                    sl = DOME_SLIDER
+                    pygame.draw.rect(screen, (50, 56, 76), sl, border_radius=6)
+                    fx = sl.x + (b.dome + 160) / 340 * sl.w
+                    pygame.draw.circle(screen, (160, 160, 255), (int(fx), sl.centery), 11)
+                    text("Dome  %d" % b.dome, (sl.x, sl.y - 20), FS, DIM)
             elif b.mode == "Patrol":
                 text("Patrol: roams by itself, backs off when it bumps,", (346, 340), FS)
                 text("emotes now and then. Any key/stick stops it.", (346, 358), FS)
@@ -1152,12 +1288,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                         state["recs"] = modes.list_recordings()
                     except Exception:
                         state["recs"] = []
-            button((690, 420, 140, 32), "Pat (P)", b.pet, col=(120, 220, 140))
-            button((690, 458, 140, 32), "Poke (O)", b.poke, col=(255, 130, 130))
+            aiming = state.get("aim") is b
+            button((690, 420, 140, 32), "Done aiming" if aiming else "Aim", (lambda b=b: aim_toggle(b)), col=(0, 220, 255) if aiming else (120, 200, 255))
+            for rr, lab_, key_ in ((HOLD_BOOST, "Boost (hold)", "boost"), (HOLD_REV, "Reverse (hold)", "reverse")):
+                held = state.get("hold_" + key_)
+                pygame.draw.rect(screen, (255, 230, 120) if held else (200, 170, 90), rr, border_radius=8)
+                t_ = FS.render(lab_, True, (10, 12, 20)); screen.blit(t_, t_.get_rect(center=rr.center))
             if b.d.model in ("R2D2", "R2Q5"):
-                button((690, 496, 140, 32), "Stance (X)", b.toggle_stance, col=(160, 160, 255))
-                button((690, 534, 66, 32), "Dome<", lambda: b.turn_dome(-30), col=(160, 160, 255), f=FS)
-                button((764, 534, 66, 32), "Dome>", lambda: b.turn_dome(30), col=(160, 160, 255), f=FS)
+                button((690, 534, 140, 32), "Stance (X)", b.toggle_stance, col=(160, 160, 255))
+            if aiming:
+                text("AIM: turn with Left/Right or drag the pad sideways,", (346, 600), FS, (0, 220, 255))
+                text("until the back light faces you. Then press Done.", (346, 618), FS, (0, 220, 255))
             if isinstance(b.d, MockDroid):
                 button((690, 572, 140, 32), "Fake bump", b.d.simulate_bump, col=(200, 200, 200))
             evs = sorted([e for x in brains() for e in x.events])[-4:]
@@ -1244,9 +1385,14 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 else:
                     text("On-board idle animations: not supported on %s" % PRETTY.get(sf.d.model, sf.d.model), (360, yy + 8), FS, DIM)
                 anyon = sf.p.human_on or (sf.p.onboard_idle and sf.d.model in ONBOARD_IDLE_MODELS)
-                button((360, 400, 220, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
+                button((360, 400, 210, 36), "All interactions OFF" if anyon else "All interactions ON", all_off, col=(255, 130, 130) if anyon else (0, 200, 120), f=FS)
                 text("Saved in this droid's memory; re-sent on every connect.", (360, 446), FS, DIM)
-                button((720, 400, 100, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
+                text("Firmware: %s    Battery: %s" % (getattr(sf.d, "firmware", None) or "?", ("%d%%" % sf.d.get_battery()) if sf.d.get_battery() is not None else "?"), (360, 236), FS, DIM)
+                if getattr(sf.d, "volume", None) is not None and sf.d.model in ("R2D2", "R2Q5"):
+                    text("Volume %d%%" % (sf.d.volume * 100 // 255), (590, 410), FS)
+                    button((680, 402, 30, 30), "-", lambda sf=sf: sf.d.set_volume(max(0, sf.d.volume - 32)), col=(160, 160, 255), f=FS)
+                    button((714, 402, 30, 30), "+", lambda sf=sf: sf.d.set_volume(min(255, sf.d.volume + 32)), col=(160, 160, 255), f=FS)
+                button((760, 400, 70, 36), "Done", lambda: state.__setitem__("settings_for", None), col=(180, 180, 180))
         cs = state.get("confirm_sleep")
         if cs:
             if cs not in brains():
@@ -1306,7 +1452,7 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 set_display("Fullscreen")
                 pygame.display.set_mode = _orig
                 state["fallback_ok"] = dset.display == "Windowed" and not (window.get_flags() & pygame.FULLSCREEN)
-            if os.environ.get("DC_SHOT") and frame in (35, 50, 79, 80, 89):
+            if os.environ.get("DC_SHOT") and frame in (15, 35, 50, 79, 80, 89):
                 pygame.image.save(screen, "/tmp/band%d.png" % frame)
         if selftest_frames and frame >= selftest_frames:
             running = False
@@ -1407,11 +1553,11 @@ def selftest():
     check(um.read_last_result("1.2.2", lp) is None, "log removed after reading")
     import keybinds as kbm
     kp = path + "keys"; k1 = kbm.Keybinds(kp)
-    check(k1.action_for_key("w") == "up" and k1.action_for_key("1") == "emote1" and k1.action_for_pad(4) == "pat", "default keybinds")
+    check(k1.action_for_key("w") == "up" and k1.action_for_key("1") == "emote1" and k1.action_for_pad(4) == "reverse", "default keybinds")
     check(not k1.conflicts(), "defaults have no conflicts")
-    k1.set_key("up", "t"); k1.set_pad("poke", 4); k2 = kbm.Keybinds(kp)
+    k1.set_key("up", "t"); k1.set_pad("aim", 4); k2 = kbm.Keybinds(kp)
     check(k2.action_for_key("t") == "up" and k2.action_for_key("w") is None, "rebind saved + loaded")
-    check({"pat", "poke"} <= k2.conflicts(), "conflict detected")
+    check({"reverse", "aim"} <= k2.conflicts(), "conflict detected")
     k2.reset(); check(kbm.Keybinds(kp).action_for_key("w") == "up", "reset to defaults")
     d = MockDroid("BB9E", "zz"); b = Brain(d, Personality("zz", path + "zz")); b.goodnight(); d.deep_sleep()
     check(d.calls[0][0] == "emote" and ("deep_sleep", None) in d.calls and os.path.exists(path + "zz"), "deep sleep: goodnight emote, memory saved, sleep sent")
@@ -1461,6 +1607,20 @@ def selftest():
     d8 = MockDroid("BB8", "b8"); Brain(d8, Personality("b8", path + "b8")).greet(); check(not any(c[0] == "idle_anim" for c in d8.calls), "BB-8: no on-board idle command")
     from spherov2.toy.bb9e import BB9E as _b9; from spherov2.toy.r2q5 import R2Q5 as _q5; from spherov2.toy.bb8 import BB8 as _b8
     check(hasattr(_b9, "enable_idle_animations") and hasattr(_q5, "enable_idle_animations") and not hasattr(_b8, "enable_idle_animations"), "idle animation API per model")
+    d = MockDroid("R2D2", "rv"); b = Brain(d, Personality("rv", path + "rv")); b.control(0.1, 0, -150, True)
+    check(d.speed == -150, "reverse drives backwards (negative speed)")
+    d.aim("start"); d.aim(45); d.aim("done"); check([c for c in d.calls if c[0] == "aim"] == [("aim", "start"), ("aim", 45), ("aim", "done")], "aim calibration commands")
+    check(modes.MODES == ["Drive", "Patrol", "Path"], "original app modes only")
+    from spherov2.sphero_edu import SpheroEduAPI as _A
+    check(all(hasattr(_A, n) for n in ("reset_aim", "set_back_led", "get_distance")), "aim/distance API present")
+    import battery as bm
+    check(bm.voltage_to_percent(4.2) == 100 and bm.voltage_to_percent(3.2) == 0 and 45 <= bm.voltage_to_percent(3.78) <= 50, "li-ion curve (non-linear)")
+    check(bm.voltage_to_percent(3.70, 1.0) > bm.voltage_to_percent(3.70), "load compensation")
+    check(bm.voltage_to_percent(7.6) == bm.voltage_to_percent(3.8), "2-cell pack handled")
+    g = bm.BatteryGauge(); g.update(3.80); p1 = g.percent; g.update(3.95); check(g.percent <= p1 + 1, "smoothed, no upward creep while discharging")
+    class _St: name = "CHARGING"
+    g.update(4.1, state=_St()); check(g.state == "Charging" and "Charging" in g.label(), "charging state shown")
+    g2 = bm.BatteryGauge(); g2.update(3.7, percent=64); check(g2.percent == 64 and g2.source == "droid", "droid-reported % preferred")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
