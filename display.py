@@ -63,7 +63,29 @@ def next_mode(cur):
 
 
 def apply_mode(pygame, mode, window_size):
-    """Create/recreate the window for a mode. Returns the window surface."""
+    """Create the window for a mode. The display subsystem is fully restarted first, because switching flags
+    on an existing SDL window (esp. leaving fullscreen) can crash on Windows. Falls back to Windowed."""
+    try:
+        return _apply(pygame, mode, window_size)
+    except Exception:
+        _log_exc("display mode %s failed" % mode)
+        try:
+            return _apply(pygame, "Windowed", list(BASE))
+        except Exception:
+            _log_exc("windowed fallback failed")
+            pygame.display.init()
+            return pygame.display.set_mode(BASE)
+
+
+def _apply(pygame, mode, window_size):
+    pygame.display.quit()
+    for k in ("SDL_VIDEO_WINDOW_POS", "SDL_VIDEO_CENTERED"):
+        os.environ.pop(k, None)
+    if mode == "Full window":
+        os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
+    elif mode == "Windowed":
+        os.environ["SDL_VIDEO_CENTERED"] = "1"
+    pygame.display.init()
     try:
         desk = pygame.display.get_desktop_sizes()[0]
     except Exception:
@@ -72,17 +94,21 @@ def apply_mode(pygame, mode, window_size):
         win = pygame.display.set_mode(desk, pygame.FULLSCREEN)
     elif mode == "Full window":
         win = pygame.display.set_mode(desk, pygame.NOFRAME)
-        _move_window(pygame, (0, 0))
     else:
-        size = (min(window_size[0], desk[0]), min(window_size[1], desk[1]))
+        size = (max(480, min(window_size[0], desk[0])), max(300, min(window_size[1], desk[1] - 60)))
         win = pygame.display.set_mode(size, pygame.RESIZABLE)
-        _move_window(pygame, ((desk[0] - size[0]) // 2, max(0, (desk[1] - size[1]) // 2)))
+    try:
+        from droid_commander import APP, VERSION
+        pygame.display.set_caption("%s %s" % (APP, VERSION))
+    except Exception:
+        pass
     return win
 
 
-def _move_window(pygame, pos):
+def _log_exc(msg):
     try:
-        from pygame._sdl2.video import Window
-        Window.from_display_module().position = pos
+        import traceback
+        from droid_commander import log
+        log(msg + ": " + traceback.format_exc())
     except Exception:
         pass

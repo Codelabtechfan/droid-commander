@@ -40,6 +40,8 @@ Click **Force Band** at the bottom left.
 ## Problems?
 Click **Debug log** in the right panel to see what the app is doing. **Open folder** opens `%APPDATA%\DroidCommander`; send `log.txt` from there if something isn't working.
 
+If the app ever crashes, the details are saved in `%APPDATA%\DroidCommander\crash.txt`.
+
 ## Updates
 If an update ever fails, the app tells you next time it starts. The new version is then saved next to the old one as `DroidCommander-new.exe`, so you can run that instead.
 

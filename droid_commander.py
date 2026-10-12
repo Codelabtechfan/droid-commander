@@ -192,11 +192,45 @@ class RealDroid:
         self._ready = threading.Event()
         self._t = None
 
-    def connect(self, timeout=25):
-        self._t = threading.Thread(target=self._run, daemon=True)
-        self._t.start()
-        self._ready.wait(timeout)
-        return self.connected
+    def connect(self, timeout=30, attempts=3, status=None):
+        """Connect with retries + backoff. Cleans up a stale/failed BLE link before each retry."""
+        for i in range(1, attempts + 1):
+            if i > 1:
+                wait = 2 * (i - 1)
+                if status:
+                    status("Retrying %s %d/%d in %ds..." % (self.name, i, attempts, wait))
+                time.sleep(wait)
+            elif status:
+                status("Connecting to %s (attempt 1/%d)..." % (self.name, attempts))
+            self.error = None
+            self._stop.clear(); self._ready.clear()
+            log("[%s] connect attempt %d/%d" % (self.name, i, attempts))
+            self._t = threading.Thread(target=self._run, daemon=True)
+            self._t.start()
+            self._ready.wait(timeout)
+            if self.connected:
+                log("[%s] connected on attempt %d" % (self.name, i))
+                return True
+            log("[%s] attempt %d failed: %s" % (self.name, i, self.error or "timed out after %ds" % timeout))
+            self._cleanup()
+        return False
+
+    def _cleanup(self):
+        """Stop a half-open attempt and drop any stale BLE adapter left on the toy."""
+        self._stop.set()
+        if self._t:
+            self._t.join(12)
+        ad = getattr(self.toy, "_Toy__adapter", None)
+        if ad is not None:
+            try:
+                ad.close()
+                log("[%s] closed stale BLE link" % self.name)
+            except Exception as e:
+                log("[%s] stale link close error: %r" % (self.name, e))
+            try:
+                self.toy._Toy__adapter = None
+            except Exception:
+                pass
 
     def disconnect(self):
         self._stop.set()
@@ -362,14 +396,16 @@ class RealDroid:
         self._sent = None
 
 
-def scan(timeout=6.0):
+def scan(timeout=10.0):
     """Return list of supported toys nearby."""
     from spherov2 import scanner
     from spherov2.toy.bb8 import BB8
     from spherov2.toy.bb9e import BB9E
     from spherov2.toy.r2d2 import R2D2
     from spherov2.toy.r2q5 import R2Q5
+    log("scan start (%.0fs)" % timeout)
     toys = scanner.find_toys(timeout=timeout, toy_types=[BB8, BB9E, R2D2, R2Q5])
+    log("scan found: %s" % [(getattr(t, "name", "?"), type(t).__name__) for t in toys])
     return [t for t in toys if type(t).__name__ in SUPPORTED]
 
 
@@ -643,10 +679,17 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         return dispmod.to_canvas(pygame.mouse.get_pos(), window.get_size(), (W, H))
     def set_display(mode):
         nonlocal window
-        if dset.display == "Windowed" and mode != "Windowed":
-            dset.window_size = list(window.get_size())
-        dset.display = mode; dset.save()
+        log("display: %s -> %s" % (dset.display, mode))
+        try:
+            if dset.display == "Windowed" and mode != "Windowed":
+                dset.window_size = list(window.get_size())
+        except Exception:
+            pass
         window = dispmod.apply_mode(pygame, mode, dset.window_size)
+        ok = (mode == "Windowed") or (window.get_flags() & (pygame.FULLSCREEN | pygame.NOFRAME))
+        dset.display = mode if ok else "Windowed"; dset.save()
+        if not ok:
+            state["status"] = "That display mode didn't work here, so I switched back to Windowed."
     pygame.display.set_caption("%s %s" % (APP, VERSION))
     clock = pygame.time.Clock()
     F = pygame.font.SysFont("segoeui,arial,dejavusans", 18)
@@ -700,14 +743,20 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
         if key:
             state["busy_addrs"].add(key)
         def w():
-            ok = droid.connect()  # each droid gets its own BLE worker thread
+            def st(msg):
+                state["status"] = msg
+            try:
+                ok = droid.connect(status=st)  # each droid gets its own BLE worker thread
+            except TypeError:
+                ok = droid.connect()  # demo droid
             if ok:
                 b = Brain(droid); b.greet(); b.key = key
                 brains().append(b); state["active"] = len(brains()) - 1
                 state["status"] = "Connected to %s (%s). %d droid(s) online." % (droid.name, PRETTY.get(droid.model, droid.model), len(brains()))
             else:
                 state["busy_addrs"].discard(key)
-                state["status"] = "Could not connect to %s: %s" % (droid.name, getattr(droid, "error", None) or "timed out")
+                state["status"] = "Could not connect to %s after 3 tries (%s). Tips: wake it (off charger, shake), close the Sphero phone app, move closer, turn Bluetooth off/on, then SCAN again." % (droid.name, (getattr(droid, "error", None) or "timed out")[:40])
+                log("connect gave up: %s" % droid.name)
             state["connecting"] -= 1
         threading.Thread(target=w, daemon=True).start()
 
@@ -1292,6 +1341,16 @@ def run_gui(demo=False, selftest_frames=0, demo_count=1):
                 set_display(dispmod.next_mode(dset.display))
             if frame == 72:
                 set_display("Windowed")
+            if frame == 74:  # a failing mode must fall back to Windowed, not crash
+                _orig = pygame.display.set_mode
+                def _bad(size, flags=0, *a_):
+                    if flags & pygame.FULLSCREEN:
+                        raise pygame.error("simulated fullscreen failure")
+                    return _orig(size, flags, *a_)
+                pygame.display.set_mode = _bad
+                set_display("Fullscreen")
+                pygame.display.set_mode = _orig
+                state["fallback_ok"] = dset.display == "Windowed" and not (window.get_flags() & pygame.FULLSCREEN)
             if os.environ.get("DC_SHOT") and frame in (35, 50, 80, 89):
                 pygame.image.save(screen, "/tmp/band%d.png" % frame)
         if selftest_frames and frame >= selftest_frames:
@@ -1431,9 +1490,26 @@ def selftest():
     rd.api, rd.Color, rd._sent = None, None, None
     rd._do(("emote", "Happy")); check(len(FakeToy.got) == 1 and len(FakeToy.got[0]) == 1, "emote sends animation without bogus wait/proc arg")
     rd._safe(lambda: 1 / 0, "boom"); check(rd.errors == 1 and "boom" in rd.last_error, "command errors are counted + surfaced")
+    class FlakyDroid(RealDroid):
+        def __init__(self):
+            self.name = "flaky"; self.model = "R2D2"; self.toy = object(); self.connected = False; self.error = None
+            self._stop = threading.Event(); self._ready = threading.Event(); self._t = None; self.tries = 0
+        def _run(self):
+            self.tries += 1
+            if self.tries < 3:
+                self.error = "fake BLE error"
+            else:
+                self.connected = True
+            self._ready.set()
+    _sl = time.sleep; time.sleep = lambda x: None
+    msgs = []; fd = FlakyDroid(); ok = fd.connect(timeout=2, status=msgs.append); time.sleep = _sl
+    check(ok and fd.tries == 3 and any("Retrying" in m and "3/3" in m for m in msgs), "connect retries with status")
+    fd2 = FlakyDroid(); fd2.tries = -99; time.sleep = lambda x: None; ok2 = fd2.connect(timeout=1, attempts=3); time.sleep = _sl
+    check(not ok2 and fd2.tries == -96, "connect gives up after 3 attempts")
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy"); os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         st = run_gui(demo=True, selftest_frames=90, demo_count=3)
+        check(st.get("fallback_ok"), "display switching survives a failing mode (falls back to Windowed)")
         check(len(st["brains"]) == 0, "GUI ran 90 frames with 3 demo droids")
     except Exception as e:
         traceback.print_exc(); check(False, "GUI: %r" % e)
@@ -1448,18 +1524,41 @@ def main():
         sys.stderr = open(os.devnull, "w")
     if "--selftest" in sys.argv:
         if getattr(sys, "frozen", False):
-            sys.stdout = sys.stderr = open(os.path.join(os.getcwd(), "selftest_log.txt"), "w")
+            sys.stdout = sys.stderr = open(os.path.join(os.getcwd(), "selftest_log.txt"), "w", buffering=1)
+            import faulthandler; faulthandler.enable(sys.stdout)
         code = selftest()
         sys.stdout.flush()
         if getattr(sys, "frozen", False):
             with open(os.path.join(os.getcwd(), "selftest_result.txt"), "w") as f:
                 f.write(("OK" if code == 0 else "FAILED") + " " + VERSION)
         sys.exit(code)
+    try:
+        import faulthandler
+        global _crash_fh
+        _crash_fh = open(os.path.join(data_dir(), "crash.txt"), "a")
+        faulthandler.enable(_crash_fh)
+    except Exception:
+        pass
     log("==== Droid Commander %s start (python %s, %s) ====" % (VERSION, sys.version.split()[0], sys.platform))
     try:
         run_gui(demo="--demo" in sys.argv)
     except Exception:
-        log(traceback.format_exc()); raise
+        tb = traceback.format_exc()
+        log("CRASH: " + tb)
+        cp = os.path.join(data_dir(), "crash.txt")
+        try:
+            with open(cp, "a", encoding="utf-8") as f:
+                f.write("\n==== %s v%s ====\n%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), VERSION, tb))
+        except Exception:
+            pass
+        msg = ("Sorry, Droid Commander crashed.\n\nThe details were saved to:\n%s\n\n"
+               "Your droids' memories are safe. Please send that file so it can be fixed.") % cp
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, msg, "Droid Commander", 0x10)
+        except Exception:
+            print(msg)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
